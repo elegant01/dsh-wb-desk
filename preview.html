@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>dsh-wb-desk 面板预览（mock 数据）</title>
+<style>
+  html, body, #app { height: 100%; margin: 0; }
+  body { font-family: "Segoe UI", "Microsoft YaHei", sans-serif; }
+</style>
+<script src="./react.js"></script>
+<script src="./react-dom.js"></script>
+<script>
+  if (!window.React || !window.ReactDOM) {
+    document.write('<div style="padding:24px;color:#c00">React/ReactDOM 加载失败：请确认 react.js、react-dom.js 与 preview.html 在同一目录</div>')
+  }
+</script>
+<script>
+  /* ModuleLoader 垫片：模拟宿主加载 client.js */
+  window.__ModuleLoader__ = {
+    load: (def) => {
+      window.__plugin__ = def.factory((name) => {
+        if (name === 'react') return React
+        throw new Error('preview 里不需要 ' + name)
+      })
+    }
+  }
+</script>
+<script src="./client.js"></script>
+<script>
+  /* ── mock 数据 ── */
+  const SAMPLE_MD = [
+    '# 项目周报',
+    '',
+    '## 本周进展',
+    '',
+    '- 完成**分级写入**拦截器',
+    '- 完成*固定修订引用*的 pin 语义',
+    '- 修复了 `mkdir` 误建同名目录的 bug',
+    '',
+    '## 数据一览',
+    '',
+    '| 模块 | 状态 |',
+    '| --- | --- |',
+    '| 存储层 | 已完成 |',
+    '| 拦截器 | 已完成 |',
+    '| 目录导航 | 本轮新增 |',
+    '',
+    '```js',
+    'console.log("代码块也支持")',
+    '```',
+    '',
+    '> 提示：这是 mock 预览，编辑保存在真机上才落盘。',
+    '',
+    '详情见 [需求文档](https://example.com/doc)。'
+  ].join('\n')
+
+  const SAMPLE_CSV = '名称,数值,状态\n注册用户,1200,上升\n活跃用户,860,上升\n流失用户,42,下降\n'
+  const SAMPLE_HTML = '<!DOCTYPE html><html><head><meta charset="utf-8"><style>body{font-family:sans-serif;padding:24px}h1{color:#1c6ed4}</style></head><body><h1>HTML 产物预览</h1><p>这个 iframe 直接渲染 .html 文件内容（沙箱内脚本可运行）。</p></body></html>'
+
+  const state = {
+    root: 'C:\\Users\\demo\\.dsh\\library（预览 mock）',
+    pending: [
+      { id: 'demo-1', createdAt: '2026-11-18T10:12:00Z', tool: 'edit', targetPath: 'C:\\…\\library\\projects\\周报.md', summary: '## 本周进展\n- 修复了 mkdir 误建同名目录的 bug\n- 新增目录导航', content: '示例内容 A' },
+      { id: 'demo-2', createdAt: '2026-11-18T11:40:00Z', tool: 'write', targetPath: 'C:\\…\\library\\archive\\旧方案.md', summary: '# 旧方案（覆盖版）\n……', content: '示例内容 B' }
+    ],
+    pins: [
+      { relPath: 'projects/需求文档.md', pinId: 'p1', hash: 'aa11', createdAt: '2026-11-18T09:00:00Z', drifted: true },
+      { relPath: 'inbox/项目周报.md', pinId: 'p2', hash: 'bb22', createdAt: '2026-11-18T10:30:00Z', drifted: false }
+    ],
+    artifacts: [
+      { time: '2026-11-18T11:42:00Z', sessionId: 'sess-8f2a', tool: 'write', libPath: 'inbox/_build_biz.cjs', sourcePath: 'D:\\ws\\_build_biz.cjs', kind: 'relocated' },
+      { time: '2026-11-18T11:40:00Z', sessionId: 'sess-8f2a', tool: 'edit', libPath: 'projects/周报.md', kind: 'pending' },
+      { time: '2026-11-18T10:33:00Z', sessionId: 'sess-7c19', tool: 'write', libPath: 'inbox/项目周报.md', sourcePath: 'D:\\ws\\周报.md', kind: 'relocated' }
+    ]
+  }
+
+  const files = {
+    'inbox/项目周报.md': SAMPLE_MD,
+    'inbox/数据表.csv': SAMPLE_CSV,
+    'inbox/演示页.html': SAMPLE_HTML
+  }
+
+  const now = Date.now()
+  const tree = [
+    { name: 'archive', path: 'archive', kind: 'directory', mtime: now - 6 * 86400e3, children: [] },
+    {
+      name: 'inbox', path: 'inbox', kind: 'directory', mtime: now - 3600e3, children: [
+        { name: '项目周报.md', path: 'inbox/项目周报.md', kind: 'file', size: 1280, mtime: now - 1800e3 },
+        { name: '数据表.csv', path: 'inbox/数据表.csv', kind: 'file', size: 96, mtime: now - 7200e3 },
+        { name: '演示页.html', path: 'inbox/演示页.html', kind: 'file', size: 640, mtime: now - 2 * 86400e3 }
+      ]
+    },
+    {
+      name: 'projects', path: 'projects', kind: 'directory', mtime: now - 5400e3, children: [
+        { name: '需求文档.md', path: 'projects/需求文档.md', kind: 'file', size: 10240, mtime: now - 5400e3 },
+        { name: '周报素材', path: 'projects/周报素材', kind: 'directory', mtime: now - 9000e3, children: [
+          { name: '数据表.csv', path: 'projects/周报素材/数据表.csv', kind: 'file', size: 210, mtime: now - 9000e3 }
+        ] }
+      ]
+    }
+  ]
+
+  function mockJson(obj) {
+    return Promise.resolve(new Response(JSON.stringify(obj), { status: 200, headers: { 'content-type': 'application/json' } }))
+  }
+
+  /* ── 拦截 fetch，路由到 mock ── */
+  const realFetch = window.fetch.bind(window)
+  window.fetch = function (input, opts) {
+    const url = typeof input === 'string' ? input : input.url
+    if (!url.includes('/dsh-wb-desk/')) return realFetch(input, opts)
+    const route = url.split('/dsh-wb-desk')[1]
+    const [path, qs] = route.split('?')
+    const params = new URLSearchParams(qs || '')
+    const body = opts && opts.body ? JSON.parse(opts.body) : {}
+
+    if (path === '/root') return mockJson({ root: state.root })
+    if (path === '/tree') return mockJson({ items: tree })
+    /* 在 mock 树里增节点，让新建/上传在预览里可见 */
+    const addToTree = (rel, kind, text) => {
+      const parts = rel.split('/')
+      let list = tree
+      for (let i = 0; i < parts.length - 1; i++) {
+        let dir = list.find(n => n.kind === 'directory' && n.name === parts[i])
+        if (!dir) { dir = { name: parts[i], path: parts.slice(0, i + 1).join('/'), kind: 'directory', children: [], mtime: Date.now() }; list.push(dir) }
+        list = dir.children
+      }
+      if (kind === 'directory') list.push({ name: parts.at(-1), path: rel, kind: 'directory', children: [], mtime: Date.now() })
+      else {
+        list.push({ name: parts.at(-1), path: rel, kind: 'file', size: (text || '').length || 1200, mtime: Date.now() })
+        if (typeof text === 'string') files[rel] = text
+      }
+    }
+    if (path === '/newfile') {
+      const dir = body.dir || 'inbox'
+      const office = { docx: ['未命名文档', '.docx'], xlsx: ['未命名表格', '.xlsx'], pptx: ['未命名演示', '.pptx'] }[body.type]
+      const stem = office ? office[0] : body.type === 'csv' ? '未命名表格' : body.type === 'html' ? '未命名网页' : '未命名文档'
+      const ext = office ? office[1] : body.type === 'csv' ? '.csv' : body.type === 'html' ? '.html' : '.md'
+      let n = 1, rel = ''
+      for (;;) {
+        rel = dir + '/' + (n === 1 ? stem + ext : stem + '-' + n + ext)
+        if (!(rel in files) && !JSON.stringify(tree).includes('"' + rel + '"')) break
+        n++
+      }
+      addToTree(rel, 'file', office ? null : body.type === 'csv' ? '名称,数值\n示例,1\n' : body.type === 'html' ? '<!DOCTYPE html><html><head><meta charset="utf-8"></head><body><h1>未命名网页</h1></body></html>' : '# ' + stem + '\n\n')
+      return mockJson({ ok: true, path: rel })
+    }
+    if (path === '/mkdir') { addToTree(body.path, 'directory'); return mockJson({ ok: true }) }
+    if (path === '/upload') {
+      const rel = (body.dir || 'inbox') + '/' + body.name
+      let text = null
+      try { text = atob(body.base64 || '') } catch {}
+      if (text && !/^[\x20-\x7e\u4e00-\u9fff\n\r\t，。；：""''（）·—…、\s]*$/.test(text)) text = null
+      addToTree(rel, 'file', text)
+      return mockJson({ ok: true, path: rel })
+    }
+    if (path === '/file') {
+      const p = params.get('path')
+      if (!(p in files)) return mockJson({ path: p, kind: 'error', text: null })
+      const kind = p.endsWith('.md') || p.endsWith('.csv') || p.endsWith('.html') || p.endsWith('.txt') ? 'text' : 'binary'
+      return mockJson({ path: p, kind, text: kind === 'text' ? files[p] : null })
+    }
+    if (path === '/pending') return mockJson({ items: state.pending })
+    if (path === '/pending/resolve') {
+      state.pending = state.pending.filter(x => x.id !== body.id)
+      return mockJson({ ok: true, items: state.pending })
+    }
+    if (path === '/pins') return mockJson({ items: state.pins })
+    if (path === '/pins/release') {
+      state.pins = state.pins.filter(x => x.relPath !== body.path)
+      return mockJson({ ok: true, items: state.pins })
+    }
+    if (path === '/artifacts') return mockJson({ items: state.artifacts })
+    if (path === '/cloud/config' && (!opts || !opts.method)) return mockJson(state.cloud ? { configured: true, config: { ...state.cloud, secretKey: '__keep__' } } : { configured: false })
+    if (path === '/cloud/config') { state.cloud = { ...body, secretKey: 'saved' }; return mockJson({ ok: true }) }
+    if (path === '/cloud/test') return mockJson({ ok: true, detail: '连接成功，云端前缀下已有 3 个文件（mock）' })
+    if (path === '/cloud/sync') return mockJson({ pushed: 2, pulled: 1, skipped: 5, errors: [] })
+    if (path === '/search') {
+      const q = (params.get('q') || '').toLowerCase()
+      const hits = []
+      for (const [p, text] of Object.entries(files)) {
+        text.split('\n').forEach((line, i) => {
+          if (line.toLowerCase().includes(q)) hits.push({ path: p, lineNo: i + 1, line: line.trim().slice(0, 200) })
+        })
+      }
+      return mockJson({ hits: hits.slice(0, 50) })
+    }
+    return mockJson({ ok: true })
+  }
+
+  /* ── 挂载插件面板 ── */
+  document.addEventListener('DOMContentLoaded', () => {
+    const mod = window.__plugin__
+    const slots = { main: null }
+    const ctx = {
+      effect: (fn) => fn(),
+      slots: {
+        inject: (name, fn) => {
+          const r = fn()
+          if (name === 'main') slots.main = r.comp
+        },
+        register: (def, comp) => ({ def, comp }),
+      },
+    }
+    mod.apply(ctx)
+    const root = ReactDOM.createRoot(document.getElementById('app'))
+    root.render(React.createElement(slots.main))
+  })
+</script>
+</head>
+<body>
+<div id="app"></div>
+</body>
+</html>

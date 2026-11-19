@@ -1,0 +1,6 @@
+# dsh-wb-desk bundle patch：host 半 + client 半。
+# host：tools waterfall 拦截器 + 存储初始化
+# client：资料库侧边栏入口（src/client/index.ts）
+- insert:
+    - id: dsh-wb-desk
+      name: dsh-wb-desk
