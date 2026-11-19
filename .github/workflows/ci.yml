@@ -1,0 +1,24 @@
+name: CI
+
+# PR 与 main 推送时的检查：类型检查 + 构建 + client 语法 + npm 包内容。
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    name: Typecheck, build, package check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - name: Check client bundle syntax
+        run: node --check client.js
+      - name: Verify npm tarball contents
+        run: npm pack --dry-run

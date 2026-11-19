@@ -273,7 +273,7 @@ async function remotePut(cfg: CloudConfig, key: string, body: Buffer): Promise<v
   if (!res.ok && res.status !== 201 && res.status !== 204) throw new Error(`上传失败（HTTP ${res.status}）`)
 }
 
-/* ── 本地遍历（跳过 .dsh-library 等隐藏目录）── */
+/* ── 本地遍历（跳过 .dsh-library 等隐藏目录与 inbox Agent 产物区）── */
 interface LocalEntry { rel: string; size: number; mtime: number }
 async function localList(): Promise<LocalEntry[]> {
   const out: LocalEntry[] = []
@@ -282,6 +282,7 @@ async function localList(): Promise<LocalEntry[]> {
     try { entries = await readdir(dir, { withFileTypes: true }) } catch { return }
     for (const entry of entries) {
       if (entry.name.startsWith('.')) continue
+      if (rel === '' && entry.name === 'inbox') continue // inbox 是本地产物区，只留在本地，不镜像上云
       const abs = join(dir, entry.name)
       const relPath = rel ? `${rel}/${entry.name}` : entry.name
       if (entry.isDirectory()) await walk(abs, relPath)
@@ -295,6 +296,48 @@ async function localList(): Promise<LocalEntry[]> {
   }
   await walk(LIBRARY_ROOT, '')
   return out
+}
+
+/* ── 单文件推送与分享链接 ── */
+/** 把库内单个文件推到云端（relKey 为库内相对路径）。 */
+export async function pushFile(cfg: CloudConfig, relKey: string): Promise<void> {
+  const abs = join(LIBRARY_ROOT, relKey)
+  await remotePut(cfg, relKey, await readFile(abs))
+}
+
+/**
+ * 生成 COS 预签名 GET 链接（带过期时间）。
+ * 签名进查询参数：q-url-param-list 为空、q-header-list=host，
+ * 规范串与线上 query 用同一套编码（对齐 cos-js-sdk-v5 的 getAuth 行为）。
+ */
+export function presignCosGet(cfg: CloudConfig, relKey: string, expiresSec: number): string {
+  if (cfg.protocol !== 'cos') throw new Error('分享链接目前仅支持腾讯云 COS')
+  if (!cfg.bucket) throw new Error('COS 需要填 Bucket（存储桶名-APPID）')
+  const host = `${cfg.bucket}.${new URL(cfg.endpoint).host}`
+  const fullKey = prefixOf(cfg) + relKey
+  const signPath = '/' + fullKey
+  const wirePath = '/' + encodeKey(fullKey)
+  const nowSec = Math.floor(Date.now() / 1000)
+  const keyTime = `${nowSec - 60};${nowSec + expiresSec}`
+  const query: Record<string, string> = {
+    'q-sign-algorithm': 'sha1',
+    'q-ak': cfg.accessKey,
+    'q-sign-time': keyTime,
+    'q-key-time': keyTime,
+    'q-header-list': 'host',
+    'q-url-param-list': '',
+  }
+  const encodePairs = (pairs: readonly (readonly [string, string])[]) =>
+    pairs.map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`).join('&')
+  // 规范串只覆盖「业务参数 + 声明的 Headers」，auth 参数本身不进签名
+  const headerPairs = [['host', host] as const]
+  const httpString = ['get', signPath, '', encodePairs(headerPairs), ''].join('\n')
+  const stringToSign = `sha1\n${keyTime}\n${sha1hex(httpString)}\n`
+  const signKey = createHmac('sha1', cfg.secretKey).update(keyTime).digest('hex')
+  const signature = createHmac('sha1', signKey).update(stringToSign).digest('hex')
+  const qs = Object.keys(query).sort()
+    .map(k => `${encodeURIComponent(k)}=${encodeURIComponent(query[k])}`).join('&')
+  return `https://${host}${wirePath}?${qs}&q-signature=${signature}`
 }
 
 export interface SyncResult {
@@ -325,6 +368,7 @@ export async function syncNow(cfg: CloudConfig): Promise<SyncResult> {
     }
   }
   for (const r of remote) {
+    if (r.key === 'inbox' || r.key.startsWith('inbox/')) { result.skipped++; continue } // 历史遗留的 inbox 镜像不回拉
     const l = localMap.get(r.key)
     const needPull = !l || l.mtime < r.lastmod - SKEW_MS
     if (!needPull) { result.skipped++; continue }

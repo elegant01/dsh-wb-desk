@@ -1,7 +1,9 @@
 {
   "name": "dsh-wb-desk",
+  "displayName": "DSH 资料库",
   "version": "0.1.0",
   "description": "Agent 原生产物空间：分级写入（新建自动归位 / 修改待确认）+ 固定修订引用。对标 WorkBuddy 资料库的 DSH 插件。",
+  "author": "elegant01",
   "type": "module",
   "main": "lib/index.js",
   "exports": {
@@ -14,6 +16,8 @@
     "client.js",
     "cordis.patch.yml",
     "README.md",
+    "README.en.md",
+    "CHANGELOG.md",
     "LICENSE"
   ],
   "engines": {
@@ -33,16 +37,28 @@
     }
   },
   "scripts": {
-    "build": "tsc --noEmit && tsdown src/index.ts --format esm --out-dir lib"
+    "build": "tsc --noEmit && tsdown src/index.ts --format esm --out-dir lib",
+    "prepublishOnly": "npm run build"
   },
   "keywords": [
     "dsh",
     "dsh-plugin",
     "deepseek-harness",
     "library",
-    "artifacts"
+    "artifacts",
+    "workbuddy"
   ],
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/elegant01/dsh-wb-desk.git"
+  },
+  "homepage": "https://github.com/elegant01/dsh-wb-desk#readme",
+  "bugs": "https://github.com/elegant01/dsh-wb-desk/issues",
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
   "devDependencies": {
     "@types/node": "^26.6.6",
     "tsdown": "^0.14.0",

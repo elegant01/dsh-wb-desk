@@ -1,20 +1,21 @@
 /**
  * dsh-wb-desk 存储层：文件本体直存，元数据收在 .dsh-library/ 隐藏目录。
  *
- * 布局（对应需求文档 3.4 / 第 6 节）：
+ * 布局：
  *   $DSH_HOME/library/            库根（可配置覆盖）
- *     inbox/                      Agent 自动归位的默认落点
- *     projects/                   按项目手工归档
- *     archive/                    归档区
+ *     *.html                      内置的两个介绍页（首次初始化时补，用户可删可改）
+ *     inbox/                      Agent 自动归位的落点（有产物时才出现，不预建空目录）
  *     .dsh-library/               插件元数据（不与用户文件混放）
  *       pending/                  待确认队列（持久化，崩溃不丢）
  *       pins/                     固定修订引用快照
  *
- * 初始化"原地收编"：只补建缺失目录，绝不移动/改写已有文件。
+ * 初始化"原地收编"：只补建缺失内容，绝不移动/改写已有文件。
  */
 import { homedir } from 'node:os'
 import { join } from 'node:path'
-import { mkdir } from 'node:fs/promises'
+import { mkdir, writeFile } from 'node:fs/promises'
+import { existsSync } from 'node:fs'
+import { INTRO_FILES } from './intro.js'
 
 /** 库根：DSH_LIBRARY_ROOT 覆盖 > DSH_HOME/library > ~/.dsh/library */
 export const LIBRARY_ROOT: string = process.env.DSH_WB_DESK_ROOT
@@ -27,19 +28,17 @@ export const PINS_DIR = join(META_DIR, 'pins')
 /** 回收站：删除的文件移到这里可恢复，不参与树与搜索。 */
 export const TRASH_DIR = join(META_DIR, '.trash')
 
-/** 首次打开的默认目录结构（需求文档 3.4）。 */
-export const DEFAULT_DIRS = ['inbox', 'projects', 'archive'] as const
-
 /**
- * 初始化库：mkdir recursive 对已存在目录是幂等 no-op，
- * 因此天然满足"不覆盖已有内容、原地收编"的语义。
+ * 初始化库：mkdir recursive 对已存在目录是幂等 no-op；
+ * 两个介绍页是插件固定内置内容，缺了就补、已有不覆盖。
  */
 export async function initLibrary(): Promise<void> {
   await mkdir(META_DIR, { recursive: true })
   await mkdir(PENDING_DIR, { recursive: true })
   await mkdir(PINS_DIR, { recursive: true })
-  for (const dir of DEFAULT_DIRS) {
-    await mkdir(join(LIBRARY_ROOT, dir), { recursive: true })
+  for (const file of INTRO_FILES) {
+    const abs = join(LIBRARY_ROOT, file.name)
+    if (!existsSync(abs)) await writeFile(abs, file.html, 'utf8')
   }
 }
 

@@ -10,13 +10,15 @@
  *   GET  /root              库根绝对路径
  */
 import { join, resolve, sep, extname, basename, dirname, relative } from 'node:path'
-import { readdir, readFile, rename, writeFile, mkdir, stat } from 'node:fs/promises'
-import { existsSync } from 'node:fs'
+import { readdir, readFile, rename, writeFile, mkdir, stat, copyFile } from 'node:fs/promises'
+import { existsSync, statSync } from 'node:fs'
 import { LIBRARY_ROOT, PENDING_DIR, TRASH_DIR } from './store.js'
 import { listPending, resolvePending } from './pending.js'
 import { listActivePins, releasePin } from './pins.js'
 import { readArtifacts } from './artifacts.js'
-import { loadCloudConfig, saveCloudConfig, syncNow, testCloud, scheduleAutoPush, type CloudConfig } from './cloud.js'
+import { resolveSessionMeta } from './sessionmeta.js'
+import { getDerivedArtifacts } from './artifactindex.js'
+import { loadCloudConfig, saveCloudConfig, syncNow, testCloud, scheduleAutoPush, pushFile, presignCosGet, type CloudConfig } from './cloud.js'
 
 /** 页面内可预览的文本后缀；其余一律提示不支持预览（防二进制塞爆响应）。 */
 const TEXT_EXT = new Set([
@@ -106,6 +108,7 @@ async function searchAll(query: string): Promise<SearchHit[]> {
     }
     for (const entry of entries) {
       if (entry.name.startsWith('.')) continue // .dsh-library 等隐藏目录不参与检索
+      if (rel === '' && entry.name === 'inbox') continue // Agent 产物区不属于「我的资料」
       const abs = join(dir, entry.name)
       const relPath = rel ? `${rel}/${entry.name}` : entry.name
       if (entry.isDirectory()) {
@@ -167,6 +170,44 @@ interface WebContext {
   effect(fn: () => unknown, label: string): unknown
 }
 
+/** 绝对路径是否为「会话日志里出现过的产物」（/read-abs、上传、分享共用的白名单）。 */
+async function artifactAllowed(absPath: string): Promise<boolean> {
+  const norm = absPath.replaceAll('\\', '/').toLowerCase()
+  const { entries } = await getDerivedArtifacts()
+  if (entries.some(e => e.sourcePath.toLowerCase() === norm)) return true
+  const ledger = await readArtifacts()
+  return ledger.some(i => typeof i.sourcePath === 'string' && i.sourcePath.replaceAll('\\', '/').toLowerCase() === norm)
+}
+
+/**
+ * 解析上传目标：库内路径校验后原样返回（统一 / 分隔）；
+ * 会话产物（abs=true）先复制进库根（同名加序号不覆盖），返回库内相对路径。
+ */
+async function resolveUploadTarget(rawPath: string | undefined, abs: boolean): Promise<string> {
+  if (typeof rawPath !== 'string' || rawPath.trim() === '') throw new Error('参数错误')
+  if (!abs) {
+    const absPath = safeJoin(rawPath)
+    if (!existsSync(absPath)) throw new Error('文件不存在')
+    if (!statSync(absPath).isFile()) throw new Error('只能上传单个文件')
+    return rawPath.replaceAll('\\', '/').replace(/^\/+/, '')
+  }
+  const src = rawPath.replaceAll('\\', '/')
+  if (!(await artifactAllowed(src))) throw new Error('路径不在会话产物白名单内')
+  if (!existsSync(src)) throw new Error('源文件不存在，可能已被删除')
+  const name = basename(src)
+  const dot = name.lastIndexOf('.')
+  const stem = dot > 0 ? name.slice(0, dot) : name
+  const ext = dot > 0 ? name.slice(dot) : ''
+  let rel = name
+  for (let n = 1; existsSync(safeJoin(rel)); n++) {
+    if (n > 500) throw new Error('同名文件过多')
+    rel = `${stem}-${n}${ext}`
+  }
+  await copyFile(src, safeJoin(rel))
+  scheduleAutoPush()
+  return rel
+}
+
 /** 注册 /dsh-wb-desk/* 路由（webServer 存在时）。 */
 export function registerRoutes(ctx: WebContext): void {
   ctx.effect(
@@ -193,7 +234,27 @@ export function registerRoutes(ctx: WebContext): void {
                 sendJson(res, 200, { items: [] })
                 return
               }
-              sendJson(res, 200, { items: await buildTree(LIBRARY_ROOT, '', 8) })
+              // inbox 是 Agent 产物归位区，只在「本地产物」按会话展示，不进「我的资料」
+              const items = (await buildTree(LIBRARY_ROOT, '', 8)).filter(e => e.name !== 'inbox')
+              sendJson(res, 200, { items })
+              return
+            }
+
+            // 库内全量文件元信息（含 inbox）：最近访问/我的收藏里不在 /tree 的条目靠它补大小与时间
+            if (route === '/metas' && req.method === 'GET') {
+              if (!existsSync(LIBRARY_ROOT)) {
+                sendJson(res, 200, { items: {} })
+                return
+              }
+              const flat: Record<string, { size?: number; mtime?: number }> = {}
+              const walk = (nodes: Awaited<ReturnType<typeof buildTree>>) => {
+                for (const n of nodes) {
+                  flat[n.path] = { size: n.size, mtime: n.mtime }
+                  if (n.children) walk(n.children)
+                }
+              }
+              walk(await buildTree(LIBRARY_ROOT, '', 8))
+              sendJson(res, 200, { items: flat })
               return
             }
 
@@ -256,7 +317,107 @@ export function registerRoutes(ctx: WebContext): void {
             }
 
             if (route === '/artifacts' && req.method === 'GET') {
-              sendJson(res, 200, { items: await readArtifacts() })
+              const items = await readArtifacts()
+              // 按会话翻译工作区名 + 会话标题（本地产物按 工作区/会话/文件 分组）
+              const metas = new Map<string, Awaited<ReturnType<typeof resolveSessionMeta>>>()
+              for (const item of items) {
+                if (!metas.has(item.sessionId)) metas.set(item.sessionId, await resolveSessionMeta(item.sessionId))
+              }
+              const ledgerPaths = new Set(
+                items.filter(i => i.sourcePath).map(i => `${i.sessionId}|${(i.sourcePath as string).replaceAll('\\', '/').toLowerCase()}`),
+              )
+              const enriched = items.map(item => {
+                const meta = metas.get(item.sessionId)
+                // inbox 不进我的资料的树，大小/时间由这里直接补齐；没归位的产物退回读源文件
+                let st
+                try { st = statSync(join(LIBRARY_ROOT, item.libPath)) } catch { st = undefined }
+                if (!st && typeof item.sourcePath === 'string') {
+                  try { st = statSync(item.sourcePath) } catch { st = undefined }
+                }
+                return {
+                  ...item,
+                  ws: meta?.wsName || undefined,
+                  title: meta?.title || undefined,
+                  size: st?.isFile() ? st.size : undefined,
+                  mtime: st?.mtimeMs,
+                }
+              })
+              // 历史回填：遍历全部会话日志解析 write/edit 调用（后台增量索引，本次返回缓存视图）
+              const { entries, scanning } = await getDerivedArtifacts()
+              const derived = []
+              for (const e of entries) {
+                const normKey = `${e.sessionId}|${e.sourcePath.toLowerCase()}`
+                if (ledgerPaths.has(normKey)) continue // 已被台账收录（有库内副本），不重复展示
+                let st
+                try { st = statSync(e.sourcePath) } catch { continue } // 文件已删的不展示
+                if (!st.isFile()) continue
+                derived.push({ ...e, kind: 'session-file' as const, size: st.size, mtime: st.mtimeMs })
+              }
+              sendJson(res, 200, { items: [...enriched, ...derived], scanning })
+              return
+            }
+
+            if (route === '/read-abs' && req.method === 'GET') {
+              // 会话产物预览：白名单制——只允许读「会话日志里出现过的产物路径」
+              const p = (url.searchParams.get('path') || '').replaceAll('\\', '/')
+              if (!p || !(await artifactAllowed(p))) {
+                sendJson(res, 403, { error: '路径不在会话产物白名单内' })
+                return
+              }
+              if (!TEXT_EXT.has(extname(p).toLowerCase())) {
+                sendJson(res, 200, { path: p, kind: 'binary', text: null })
+                return
+              }
+              let st
+              try { st = await stat(p) } catch {
+                sendJson(res, 404, { error: '文件不存在' })
+                return
+              }
+              if (st.size > MAX_PREVIEW_BYTES) {
+                sendJson(res, 200, { path: p, kind: 'too-large', text: null })
+                return
+              }
+              sendJson(res, 200, { path: p, kind: 'text', text: await readFile(p, 'utf8') })
+              return
+            }
+
+            // 二进制/超大文件的兜底：交给系统默认应用打开，或在资源管理器中定位
+            if (route === '/open' && req.method === 'POST') {
+              const body = JSON.parse(await readBody(req)) as { path?: string; abs?: boolean; action?: string }
+              const p = String(body.path || '')
+              const wantFolder = body.action === 'folder'
+              let abs: string
+              if (body.abs) {
+                if (!p || !(await artifactAllowed(p))) {
+                  sendJson(res, 403, { error: '路径不在会话产物白名单内' })
+                  return
+                }
+                abs = p
+              } else {
+                try { abs = safeJoin(p) } catch {
+                  sendJson(res, 400, { error: '非法路径' })
+                  return
+                }
+              }
+              if (!existsSync(abs)) {
+                sendJson(res, 404, { error: '文件不存在，可能已被移动或删除' })
+                return
+              }
+              const { spawn } = await import('node:child_process')
+              const isDir = statSync(abs).isDirectory()
+              const win = process.platform === 'win32'
+              const cmd = win ? 'explorer.exe' : process.platform === 'darwin' ? 'open' : 'xdg-open'
+              // 打开所在文件夹：Windows 用 /select 定位文件；其它平台打开父目录
+              const args = wantFolder && !isDir
+                ? win ? ['/select,', abs] : [dirname(abs)]
+                : [abs]
+              try {
+                spawn(cmd, args, { detached: true, stdio: 'ignore' }).unref()
+              } catch {
+                sendJson(res, 500, { error: '无法调起系统应用' })
+                return
+              }
+              sendJson(res, 200, { ok: true })
               return
             }
 
@@ -309,7 +470,7 @@ export function registerRoutes(ctx: WebContext): void {
 
             if (route === '/newfile' && req.method === 'POST') {
               const body = JSON.parse(await readBody(req)) as { dir?: string; type?: string }
-              const dir = body.dir && body.dir.trim() !== '' ? body.dir : 'inbox'
+              const dir = body.dir && body.dir.trim() !== '' ? body.dir : ''
               const officeExt = body.type === 'docx' || body.type === 'xlsx' || body.type === 'pptx' ? body.type : null
               const isCsv = body.type === 'csv'
               const isHtml = body.type === 'html'
@@ -353,7 +514,7 @@ export function registerRoutes(ctx: WebContext): void {
                 sendJson(res, 400, { error: '非法文件名' })
                 return
               }
-              const dir = body.dir && body.dir.trim() !== '' ? body.dir : 'inbox'
+              const dir = body.dir && body.dir.trim() !== '' ? body.dir : ''
               // name 可带子路径（导入文件夹）；逐段净化，冲突策略对齐 WorkBuddy 默认 rename：同名加序号不覆盖
               const segs = body.name.split('/').map(s => s.replace(/[\\/:*?"<>|]/g, '_')).filter(s => s && s !== '.' && s !== '..')
               if (segs.length === 0) { sendJson(res, 400, { error: '非法文件名' }); return }
@@ -533,6 +694,28 @@ export function registerRoutes(ctx: WebContext): void {
               const cfg = await loadCloudConfig()
               if (!cfg) { sendJson(res, 400, { error: '还没配置云同步' }); return }
               sendJson(res, 200, await syncNow(cfg))
+              return
+            }
+
+            if (route === '/cloud/push' && req.method === 'POST') {
+              // 单文件推送：库内文件直接推；会话产物先落到库根再推
+              const body = JSON.parse(await readBody(req)) as { path?: string; abs?: boolean }
+              const cfg = await loadCloudConfig()
+              if (!cfg) { sendJson(res, 400, { error: '还没配置云同步，请先打开「云同步」填写 COS 信息' }); return }
+              const relKey = await resolveUploadTarget(body.path, body.abs === true)
+              await pushFile(cfg, relKey)
+              sendJson(res, 200, { ok: true, path: relKey })
+              return
+            }
+
+            if (route === '/share' && req.method === 'POST') {
+              const body = JSON.parse(await readBody(req)) as { path?: string; abs?: boolean }
+              const cfg = await loadCloudConfig()
+              if (!cfg) { sendJson(res, 400, { error: '还没配置云同步，请先打开「云同步」填写 COS 信息' }); return }
+              const relKey = await resolveUploadTarget(body.path, body.abs === true)
+              await pushFile(cfg, relKey)
+              const url = presignCosGet(cfg, relKey, 7 * 86400)
+              sendJson(res, 200, { ok: true, url, expiresDays: 7 })
               return
             }
 

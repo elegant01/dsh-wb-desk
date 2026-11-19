@@ -1,0 +1,87 @@
+name: Publish Package
+
+# 发布 dsh-wb-desk：
+#   - npmjs：push main 且版本号是新的就自动发布（OIDC trusted publisher，免 token/OTP）
+#   - GitHub Release：push v* 标签时，按 CHANGELOG 对应版本段落自动建 Release
+#
+# 认证前置（一次性）：
+#   1. 新包第一次必须手动发布（npm 不认可尚不存在的包的 trusted publisher）：
+#         npm publish --allow-publish
+#   2. 在 npmjs.com 的包设置页配置 Trusted Publisher：
+#         GitHub Actions / elegant01 / dsh-wb-desk / release.yml
+#   3. 之后 push main 即自动发布，并带 npm provenance。
+#
+# 注意：两个触发路径可能同时命中（打 tag 前刚 push 过 main），用 concurrency
+# 串行化，先到的一方发布，后到的一方在版本守卫处跳过。
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+
+concurrency:
+  group: publish-package
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Build and publish to npm
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # OIDC 必需
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          # 不设 registry-url：OIDC 握手由 npm CLI 自动完成，
+          # 显式 .npmrc 认证反而会干扰 trusted publisher 流程。
+          node-version: '24' # 内置 npm >= 11，满足 OIDC 要求
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - name: Check if version already published
+        id: check
+        run: |
+          VERSION="$(node -p "require('./package.json').version")"
+          if npm view "dsh-wb-desk@$VERSION" version --registry=https://registry.npmjs.org/ >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "npm 上已有 dsh-wb-desk@$VERSION，跳过发布"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "准备发布 dsh-wb-desk@$VERSION"
+          fi
+      - name: Publish with provenance
+        if: steps.check.outputs.exists == 'false'
+        run: npm publish --provenance --access public
+
+  github-release:
+    name: Create GitHub Release
+    needs: publish
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Extract changelog section
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          awk -v ver="$VERSION" '
+            index($0, "## [" ver "]") == 1 { f=1; next }
+            f && index($0, "## [") == 1 { exit }
+            f { print }
+          ' CHANGELOG.md > release-notes.md
+          if [ ! -s release-notes.md ]; then
+            echo "CHANGELOG.md 里没有 $VERSION 的条目" >&2
+            exit 1
+          fi
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            echo "Release $GITHUB_REF_NAME 已存在，跳过"
+          else
+            gh release create "$GITHUB_REF_NAME" --title "dsh-wb-desk $GITHUB_REF_NAME" --notes-file release-notes.md
+          fi

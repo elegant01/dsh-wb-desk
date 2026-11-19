@@ -54,6 +54,26 @@
     '详情见 [需求文档](https://example.com/doc)。'
   ].join('\n')
 
+  const SAMPLE_CODE = [
+    "// 构建脚本：收集会话产物并汇总（mock）",
+    "const fs = require('node:fs')",
+    "const path = require('node:path')",
+    '',
+    "async function buildIndex(root, options = {}) {",
+    "  const entries = await fs.promises.readdir(root, { withFileTypes: true })",
+    "  const out = []",
+    "  for (const ent of entries) {",
+    "    if (ent.name.startsWith('.')) continue",
+    "    const abs = path.join(root, ent.name)",
+    "    out.push({ name: ent.name, dir: ent.isDirectory(), size: 1024 * 3 })",
+    "  }",
+    "  return { root, count: out.length, entries: out, debug: false }",
+    "}",
+    '',
+    "module.exports = { buildIndex }",
+    '',
+    "/* 用 mock 数据验证：行号、语法高亮、文内搜索（试试搜 root 或 const） */",
+  ].join('\n')
   const SAMPLE_CSV = '名称,数值,状态\n注册用户,1200,上升\n活跃用户,860,上升\n流失用户,42,下降\n'
   const SAMPLE_HTML = '<!DOCTYPE html><html><head><meta charset="utf-8"><style>body{font-family:sans-serif;padding:24px}h1{color:#1c6ed4}</style></head><body><h1>HTML 产物预览</h1><p>这个 iframe 直接渲染 .html 文件内容（沙箱内脚本可运行）。</p></body></html>'
 
@@ -67,25 +87,37 @@
       { relPath: 'projects/需求文档.md', pinId: 'p1', hash: 'aa11', createdAt: '2026-11-18T09:00:00Z', drifted: true },
       { relPath: 'inbox/项目周报.md', pinId: 'p2', hash: 'bb22', createdAt: '2026-11-18T10:30:00Z', drifted: false }
     ],
+    /* 全部为虚构演示数据：不出现真实工作区名、会话标题与路径 */
     artifacts: [
-      { time: '2026-11-18T11:42:00Z', sessionId: 'sess-8f2a', tool: 'write', libPath: 'inbox/_build_biz.cjs', sourcePath: 'D:\\ws\\_build_biz.cjs', kind: 'relocated' },
-      { time: '2026-11-18T11:40:00Z', sessionId: 'sess-8f2a', tool: 'edit', libPath: 'projects/周报.md', kind: 'pending' },
-      { time: '2026-11-18T10:33:00Z', sessionId: 'sess-7c19', tool: 'write', libPath: 'inbox/项目周报.md', sourcePath: 'D:\\ws\\周报.md', kind: 'relocated' }
+      { time: '2026-11-19T09:40:00Z', sessionId: 'sess-1001', tool: 'present', sourcePath: 'D:\\work\\data-lab\\export\\月度报表.xlsx', kind: 'session-file', ws: 'data-lab', title: '整理月度数据', size: 436796 },
+      { time: '2026-11-19T09:35:00Z', sessionId: 'sess-1001', tool: 'present', sourcePath: 'D:\\work\\data-lab\\export\\原始数据-摊平.csv', kind: 'session-file', ws: 'data-lab', title: '整理月度数据', size: 562786 },
+      { time: '2026-11-18T11:42:00Z', sessionId: 'sess-1002', tool: 'write', libPath: 'inbox/_build_biz.cjs', sourcePath: 'D:\\work\\insight-studio\\_build_biz.cjs', kind: 'relocated', ws: 'insight-studio', title: '核对报表数据' },
+      { time: '2026-11-18T11:40:00Z', sessionId: 'sess-1002', tool: 'edit', libPath: 'projects/周报.md', kind: 'pending', ws: 'insight-studio', title: '核对报表数据' },
+      { time: '2026-11-18T10:33:00Z', sessionId: 'sess-1003', tool: 'write', libPath: 'inbox/项目周报.md', sourcePath: 'D:\\work\\insight-studio\\周报.md', kind: 'relocated', ws: 'insight-studio', title: '修复页面展示问题' },
+      { time: '2026-11-17T09:12:00Z', sessionId: 'sess-1004', tool: 'write', sourcePath: 'D:\\work\\web-demo\\dist\\report.html', kind: 'session-file', ws: 'web-demo', title: '生成月度周报页面', size: 20480 },
+      { time: '2026-11-17T08:40:00Z', sessionId: 'sess-1004', tool: 'write', sourcePath: 'D:\\work\\web-demo\\scripts\\build_report.js', kind: 'session-file', ws: 'web-demo', title: '生成月度周报页面', size: 5321 },
+      { time: '2026-11-16T15:20:00Z', sessionId: 'sess-1005', tool: 'edit', sourcePath: 'D:\\work\\ops-kit\\src\\probe.ts', kind: 'session-file', ws: 'ops-kit', title: '接口检查脚本', size: 8192 }
     ]
   }
 
   const files = {
+    'inbox/_build_biz.cjs': SAMPLE_CODE + '\n',
     'inbox/项目周报.md': SAMPLE_MD,
     'inbox/数据表.csv': SAMPLE_CSV,
-    'inbox/演示页.html': SAMPLE_HTML
+    'inbox/演示页.html': SAMPLE_HTML,
+    '欢迎使用资料库.html': SAMPLE_HTML,
+    '功能指南.html': SAMPLE_HTML
   }
 
   const now = Date.now()
   const tree = [
+    { name: '功能指南.html', path: '功能指南.html', kind: 'file', size: 1949, mtime: now - 5 * 86400e3 },
+    { name: '欢迎使用资料库.html', path: '欢迎使用资料库.html', kind: 'file', size: 2036, mtime: now - 5 * 86400e3 },
     { name: 'archive', path: 'archive', kind: 'directory', mtime: now - 6 * 86400e3, children: [] },
     {
       name: 'inbox', path: 'inbox', kind: 'directory', mtime: now - 3600e3, children: [
         { name: '项目周报.md', path: 'inbox/项目周报.md', kind: 'file', size: 1280, mtime: now - 1800e3 },
+        { name: '合同扫描件.pdf', path: 'inbox/合同扫描件.pdf', kind: 'file', size: 428032, mtime: now - 3 * 86400e3 },
         { name: '数据表.csv', path: 'inbox/数据表.csv', kind: 'file', size: 96, mtime: now - 7200e3 },
         { name: '演示页.html', path: 'inbox/演示页.html', kind: 'file', size: 640, mtime: now - 2 * 86400e3 }
       ]
@@ -116,6 +148,15 @@
 
     if (path === '/root') return mockJson({ root: state.root })
     if (path === '/tree') return mockJson({ items: tree })
+    if (path === '/metas') {
+      const flat = {}
+      const walk = nodes => (nodes || []).forEach(n => {
+        flat[n.path] = { size: n.size, mtime: n.mtime }
+        walk(n.children)
+      })
+      walk(tree)
+      return mockJson({ items: flat })
+    }
     /* 在 mock 树里增节点，让新建/上传在预览里可见 */
     const addToTree = (rel, kind, text) => {
       const parts = rel.split('/')
@@ -154,10 +195,14 @@
       addToTree(rel, 'file', text)
       return mockJson({ ok: true, path: rel })
     }
+    if (path === '/open') return mockJson({ ok: true })
     if (path === '/file') {
       const p = params.get('path')
+      if (/\.(pdf|xlsx?|docx?|pptx?|zip|rar|7z|png|jpe?g|gif|webp|mp4|mov|mp3)$/i.test(p)) return mockJson({ path: p, kind: 'binary', text: null })
+      if (!(p in files) && /\.md$/i.test(p)) return mockJson({ path: p, kind: 'text', text: SAMPLE_MD })
+      if (!(p in files) && /\.(cjs|js|ts|py|go)$/i.test(p)) return mockJson({ path: p, kind: 'text', text: SAMPLE_CODE })
       if (!(p in files)) return mockJson({ path: p, kind: 'error', text: null })
-      const kind = p.endsWith('.md') || p.endsWith('.csv') || p.endsWith('.html') || p.endsWith('.txt') ? 'text' : 'binary'
+      const kind = /\.(md|csv|html?|txt|cjs|js|mjs|ts|tsx|jsx|py|go|rs|sh|ps1|json|jsonl|ya?ml|toml|sql|css|log)$/i.test(p) ? 'text' : 'binary'
       return mockJson({ path: p, kind, text: kind === 'text' ? files[p] : null })
     }
     if (path === '/pending') return mockJson({ items: state.pending })
@@ -170,11 +215,22 @@
       state.pins = state.pins.filter(x => x.relPath !== body.path)
       return mockJson({ ok: true, items: state.pins })
     }
-    if (path === '/artifacts') return mockJson({ items: state.artifacts })
+    if (path === '/artifacts') return mockJson({
+      /* 真机 /artifacts 会给每条 stat 出 size/mtime，mock 也照此补齐，否则代码文件行会缺大小 */
+      items: state.artifacts.map(a => ({ ...a, size: a.size ?? 2048, mtime: a.mtime ?? Date.parse(a.time) })),
+      scanning: false,
+    })
+    if (path === '/read-abs') {
+      const p = params.get('path') || ''
+      const text = /\.(cjs|js|ts|py|go)$/i.test(p) ? SAMPLE_CODE : SAMPLE_MD
+      return mockJson({ path: p, kind: 'text', text })
+    }
     if (path === '/cloud/config' && (!opts || !opts.method)) return mockJson(state.cloud ? { configured: true, config: { ...state.cloud, secretKey: '__keep__' } } : { configured: false })
     if (path === '/cloud/config') { state.cloud = { ...body, secretKey: 'saved' }; return mockJson({ ok: true }) }
     if (path === '/cloud/test') return mockJson({ ok: true, detail: '连接成功，云端前缀下已有 3 个文件（mock）' })
     if (path === '/cloud/sync') return mockJson({ pushed: 2, pulled: 1, skipped: 5, errors: [] })
+    if (path === '/cloud/push') return mockJson({ ok: true, path: 'projects/' + String(body.path || 'file').split(/[\\/]/).pop() })
+    if (path === '/share') return mockJson({ ok: true, url: 'https://wb-desk-1313545220.cos.ap-guangzhou.myqcloud.com/dsh-library/mock?q-signature=abc', expiresDays: 7 })
     if (path === '/search') {
       const q = (params.get('q') || '').toLowerCase()
       const hits = []
@@ -194,6 +250,10 @@
     const slots = { main: null }
     const ctx = {
       effect: (fn) => fn(),
+      /* mock 宿主导航：记录「添加到任务」的预填草稿，便于预览里自验 */
+      uiWorkspace: {
+        startSession: (workspaceId, options) => { window.__lastStartSession = { workspaceId, options } },
+      },
       slots: {
         inject: (name, fn) => {
           const r = fn()

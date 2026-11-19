@@ -17,6 +17,7 @@ import { inLibrary, isInsideLibrary, LIBRARY_ROOT } from './store.js'
 import { enqueue, extractContent } from './pending.js'
 import { pinForRead } from './pins.js'
 import { appendArtifact, sessionIdOf } from './artifacts.js'
+import { scheduleAutoPush } from './cloud.js'
 
 /** 常见写入类工具名（宿主 write/edit/create_file 系；可按宿主实际注册名扩展）。 */
 const WRITE_TOOLS = new Set(['write', 'edit', 'create_file', 'multi_edit', 'str_replace_based_edit_tool'])
@@ -111,6 +112,8 @@ export async function postExecute(exec: { name: string; arguments: unknown; agen
       sourcePath: target,
       kind: 'relocated',
     })
+    // 归位入库也触发云端镜像（防抖 5 秒，未配置/未开启时 no-op）
+    scheduleAutoPush()
   } catch {
     // 归位失败不阻断原工具调用——生产物仍在原处，用户可手动迁移
   }
