@@ -938,6 +938,7 @@ window.__ModuleLoader__.load({
               : menu.kind === 'artifact'
               ? [
                   item('打开', () => { setMenu(null); openDrawer(node.path, node.abs) }, false, Icon.doc(15)),
+                  item('打开所在文件夹', () => { setMenu(null); openExternal(node.path, !!node.abs, 'folder') }, false, Icon.folder(15)),
                   item('复制路径', () => { copyText(node.path, '路径已复制'); setMenu(null) }, false, Icon.copy(15)),
                   item('上传到云端', () => { setMenu(null); uploadToCloud(node.path, node.abs) }, false, Icon.upload(15)),
                   item('添加到任务', () => { setMenu(null); addToTask(node.path, node.abs) }, false, Icon.task(15)),
@@ -946,6 +947,7 @@ window.__ModuleLoader__.load({
               : [
                   !isDir && item('打开', () => { setMenu(null); overlay ? openDrawer(node.path) : openFile(node.path) }),
                   isDir && item('打开文件夹', () => { setCwd(node.path); setSection('files'); setMenu(null) }),
+                  !isDir && item('打开所在文件夹', () => { setMenu(null); openExternal(node.path, false, 'folder') }, false, Icon.folder(15)),
                   item('重命名', () => startRename(node)),
                   item('复制路径', () => { copyText(node.path, '路径已复制'); setMenu(null) }, false, Icon.copy(15)),
                   !isDir && item('上传到云端', () => { setMenu(null); uploadToCloud(node.path, false) }, false, Icon.upload(15)),
