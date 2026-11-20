@@ -65,15 +65,6 @@ dsh plugin --profile desktop add github:elegant01/dsh-wb-desk
 - 不做 Office 文档在线编辑（新建的空模板请用本机 Office 打开）
 - 与 `dsh-wb`（WorkBuddy 桥接插件）、`dsh-desk`（桌面发行版）无任何关联，名字相邻纯属查找时的巧合
 
-## 开发
-
-```sh
-npm install --ignore-scripts
-npm run build     # tsdown 编译 src/index.ts → lib/index.js；client.js 免构建直发
-```
-
-宿主改动必须重启 DSH；`client.js` 改动刷新页面即可。设计验证可打开仓库根目录的 `preview.html`（mock 数据）。
-
 ## License
 
 MIT

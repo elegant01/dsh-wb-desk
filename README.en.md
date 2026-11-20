@@ -57,15 +57,6 @@ Fully quit DSH (including the tray background process) and restart.
 - No in-browser Office editing (use the empty templates with your local Office)
 - Unrelated to `dsh-wb` (WorkBuddy bridge) and `dsh-desk` (desktop edition); the similar names are coincidental
 
-## Development
-
-```sh
-npm install --ignore-scripts
-npm run build     # tsdown compiles src/index.ts → lib/index.js; client.js ships as-is
-```
-
-Host-side changes require a DSH restart; `client.js` changes only need a page refresh. Open `preview.html` in the repo root for a mocked design preview.
-
 ## License
 
 MIT
