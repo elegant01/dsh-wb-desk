@@ -10,7 +10,7 @@
  *   GET  /root              库根绝对路径
  */
 import { join, resolve, sep, extname, basename, dirname, relative } from 'node:path'
-import { readdir, readFile, rename, writeFile, mkdir, stat, copyFile } from 'node:fs/promises'
+import { readdir, readFile, rename, writeFile, mkdir, stat, copyFile, rm } from 'node:fs/promises'
 import { existsSync, statSync } from 'node:fs'
 import { LIBRARY_ROOT, PENDING_DIR, TRASH_DIR } from './store.js'
 import { listPending, resolvePending } from './pending.js'
@@ -285,7 +285,6 @@ export function registerRoutes(ctx: WebContext): void {
                 return
               }
               await writeFile(abs, body.content, 'utf8')
-              scheduleAutoPush()
               scheduleAutoPush()
               sendJson(res, 200, { ok: true })
               return
@@ -583,12 +582,23 @@ export function registerRoutes(ctx: WebContext): void {
                 sendJson(res, 200, { items: [] })
                 return
               }
-              const items = (await readdir(TRASH_DIR)).filter(f => f.endsWith('.trash')).reverse()
-                .map(f => {
-                  const dot = f.lastIndexOf('.')
-                  const encoded = f.slice(0, dot)
-                  return { name: f, originalPath: encoded.replaceAll('%2F', '/') }
-                })
+              const raw = (await readdir(TRASH_DIR)).filter(f => f.endsWith('.trash'))
+              const items = await Promise.all(raw.map(async f => {
+                // 文件名形如 <url编码后的原路径>.<删除时间戳>.trash
+                const base = f.slice(0, -'.trash'.length)
+                const dot = base.lastIndexOf('.')
+                const originalPath = base.slice(0, dot).replaceAll('%2F', '/')
+                const deletedAt = Number(base.slice(dot + 1)) || 0
+                let kind: 'file' | 'directory' = 'file'
+                let size: number | undefined
+                try {
+                  const st = statSync(join(TRASH_DIR, f))
+                  kind = st.isDirectory() ? 'directory' : 'file'
+                  if (kind === 'file') size = st.size
+                } catch {}
+                return { name: f, originalPath, deletedAt, kind, size }
+              }))
+              items.sort((a, b) => b.deletedAt - a.deletedAt)
               sendJson(res, 200, { items })
               return
             }
@@ -606,9 +616,29 @@ export function registerRoutes(ctx: WebContext): void {
               }
               const originalRel = basename(body.name, '.trash').replaceAll('%2F', '/')
               const dest = safeJoin(originalRel)
+              if (existsSync(dest)) {
+                sendJson(res, 409, { error: '原位置已有同名文件，请先改名或移走后再恢复' })
+                return
+              }
               await mkdir(dirname(dest), { recursive: true })
               await rename(trashFile, dest)
               scheduleAutoPush()
+              sendJson(res, 200, { ok: true })
+              return
+            }
+
+            if (route === '/trash-purge' && req.method === 'POST') {
+              const body = JSON.parse(await readBody(req)) as { name?: string }
+              if (typeof body.name !== 'string' || !body.name.endsWith('.trash') || basename(body.name) !== body.name) {
+                sendJson(res, 400, { error: '参数错误' })
+                return
+              }
+              const target = join(TRASH_DIR, body.name)
+              if (!existsSync(target)) {
+                sendJson(res, 404, { error: '回收站里没有这个文件' })
+                return
+              }
+              await rm(target, { recursive: true, force: true })
               sendJson(res, 200, { ok: true })
               return
             }

@@ -20,5 +20,7 @@ jobs:
       - run: npm run build
       - name: Check client bundle syntax
         run: node --check client.js
+      - name: Verify committed bundles are up to date
+        run: test -z "$(git status --porcelain)"
       - name: Verify npm tarball contents
         run: npm pack --dry-run

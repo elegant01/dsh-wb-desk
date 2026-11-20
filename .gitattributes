@@ -1,0 +1,6 @@
+# 构建产物与第三方 JS 不计入 GitHub 语言统计（源码都在 src/*.ts）
+client.js    linguist-generated=true
+lib/*        linguist-generated=true
+react.js     linguist-vendored=true
+react-dom.js linguist-vendored=true
+preview.html linguist-documentation=true

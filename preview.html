@@ -83,6 +83,10 @@
       { id: 'demo-1', createdAt: '2026-11-18T10:12:00Z', tool: 'edit', targetPath: 'C:\\…\\library\\projects\\周报.md', summary: '## 本周进展\n- 修复了 mkdir 误建同名目录的 bug\n- 新增目录导航', content: '示例内容 A' },
       { id: 'demo-2', createdAt: '2026-11-18T11:40:00Z', tool: 'write', targetPath: 'C:\\…\\library\\archive\\旧方案.md', summary: '# 旧方案（覆盖版）\n……', content: '示例内容 B' }
     ],
+    trash: [
+      { name: 'archive%2F%E6%97%A7%E6%96%B9%E6%A1%88.md.1795100000000.trash', originalPath: 'archive/旧方案.md', deletedAt: 1795100000000, kind: 'file', size: 4096 },
+      { name: 'inbox%2F%E4%B8%B4%E6%97%B6%E6%95%B0%E6%8D%AE.csv.1795090000000.trash', originalPath: 'inbox/临时数据.csv', deletedAt: 1795090000000, kind: 'file', size: 512 },
+    ],
     pins: [
       { relPath: 'projects/需求文档.md', pinId: 'p1', hash: 'aa11', createdAt: '2026-11-18T09:00:00Z', drifted: true },
       { relPath: 'inbox/项目周报.md', pinId: 'p2', hash: 'bb22', createdAt: '2026-11-18T10:30:00Z', drifted: false }
@@ -105,6 +109,7 @@
     'inbox/项目周报.md': SAMPLE_MD,
     'inbox/数据表.csv': SAMPLE_CSV,
     'inbox/演示页.html': SAMPLE_HTML,
+    'inbox/说明.txt': '这是一个纯文本文件，可直接在面板里编辑，输入停下 800ms 自动保存。\n',
     '欢迎使用资料库.html': SAMPLE_HTML,
     '功能指南.html': SAMPLE_HTML
   }
@@ -119,7 +124,8 @@
         { name: '项目周报.md', path: 'inbox/项目周报.md', kind: 'file', size: 1280, mtime: now - 1800e3 },
         { name: '合同扫描件.pdf', path: 'inbox/合同扫描件.pdf', kind: 'file', size: 428032, mtime: now - 3 * 86400e3 },
         { name: '数据表.csv', path: 'inbox/数据表.csv', kind: 'file', size: 96, mtime: now - 7200e3 },
-        { name: '演示页.html', path: 'inbox/演示页.html', kind: 'file', size: 640, mtime: now - 2 * 86400e3 }
+        { name: '演示页.html', path: 'inbox/演示页.html', kind: 'file', size: 640, mtime: now - 2 * 86400e3 },
+        { name: '说明.txt', path: 'inbox/说明.txt', kind: 'file', size: 96, mtime: now - 5400e3 }
       ]
     },
     {
@@ -196,6 +202,10 @@
       return mockJson({ ok: true, path: rel })
     }
     if (path === '/open') return mockJson({ ok: true })
+    if (path === '/file' && opts && (opts.method === 'PUT' || opts.method === 'POST')) {
+      if (files[body.path] !== undefined) files[body.path] = body.content
+      return mockJson({ ok: true })
+    }
     if (path === '/file') {
       const p = params.get('path')
       if (/\.(pdf|xlsx?|docx?|pptx?|zip|rar|7z|png|jpe?g|gif|webp|mp4|mov|mp3)$/i.test(p)) return mockJson({ path: p, kind: 'binary', text: null })
@@ -209,6 +219,15 @@
     if (path === '/pending/resolve') {
       state.pending = state.pending.filter(x => x.id !== body.id)
       return mockJson({ ok: true, items: state.pending })
+    }
+    if (path === '/trash') return mockJson({ items: state.trash })
+    if (path === '/trash-restore') {
+      state.trash = state.trash.filter(x => x.name !== body.name)
+      return mockJson({ ok: true })
+    }
+    if (path === '/trash-purge') {
+      state.trash = state.trash.filter(x => x.name !== body.name)
+      return mockJson({ ok: true })
     }
     if (path === '/pins') return mockJson({ items: state.pins })
     if (path === '/pins/release') {

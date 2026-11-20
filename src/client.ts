@@ -10,16 +10,16 @@
  *   - 待确认：Agent 修改已有文件的审阅队列，行内接受/拒绝
  * 数据来自同源 /dsh-wb-desk/*（host 半 src/routes.ts 注册的路由）。
  */
-window.__ModuleLoader__.load({
+(window as any).__ModuleLoader__.load({
   id: 'dsh-wb-desk',
-  factory: (require) => {
+  factory: (require: (id: string) => any) => {
     const React = require('react')
     const h = React.createElement
     const { useState, useEffect, useCallback, useRef, useMemo } = React
 
     const API = '/dsh-wb-desk'
 
-    async function api(path, options) {
+    async function api(path, options = {}) {
       const res = await fetch(API + path, options)
       const body = await res.json()
       if (!res.ok) throw new Error(body.error || ('HTTP ' + res.status))
@@ -40,7 +40,7 @@ window.__ModuleLoader__.load({
     }
 
     /* ── 图标：线性 SVG（对齐 WorkBuddy 的图标语言，不用 emoji）── */
-    function svg(paths, size, filled) {
+    function svg(paths, size = 16, filled = false) {
       return h('svg', {
         width: size || 16, height: size || 16, viewBox: '0 0 24 24',
         fill: filled ? 'currentColor' : 'none',
@@ -63,7 +63,7 @@ window.__ModuleLoader__.load({
         width: s || 16, height: s || 16, viewBox: '0 0 24 24', fill: 'currentColor', 'aria-hidden': true,
         style: { flexShrink: 0, display: 'block' },
       }, [5.5, 12, 18.5].map((cx, i) => h('circle', { key: i, cx, cy: 12, r: 1.6 }))),
-      star: (s, on) => svg(['M12 3.6l2.7 5.6 6.1.8-4.5 4.2 1.1 6-5.4-3-5.4 3 1.1-6L3.2 9.4l6.1-.8z'], s, on),
+      star: (s, on = false) => svg(['M12 3.6l2.7 5.6 6.1.8-4.5 4.2 1.1 6-5.4-3-5.4 3 1.1-6L3.2 9.4l6.1-.8z'], s, on),
       pin: (s) => svg(['M9 4h6l1 6 3 3v2H5v-2l3-3z', 'M12 15v6'], s),
       back: (s) => svg(['M19 12H5', 'M11 6l-6 6 6 6'], s),
       check: (s) => svg(['M4.5 12.5l5 5L20 6.5'], s),
@@ -77,6 +77,8 @@ window.__ModuleLoader__.load({
       task: (s) => svg(['M21 11.5a8.5 8.5 0 0 1-8.5 8.5H8l-4 2v-4.2A8.5 8.5 0 1 1 21 11.5z', 'M12 8v7', 'M8.5 11.5h7'], s),
       share: (s) => svg(['M4 12v7a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-7', 'M12 15.5V4', 'M8 8l4-4 4 4'], s),
       copy: (s) => svg(['M9 9h10v11H9z', 'M5 15.5V4h10'], s),
+      trash: (s) => svg(['M4 7h16', 'M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2', 'M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12'], s),
+      restore: (s) => svg(['M4 12a8 8 0 1 0 2.3-5.7', 'M4 5v5h5'], s),
     }
 
     /* ── 文件类型图标：从 WorkBuddy 资料库 UI 的原生图标集原样提取（16×16 SVG）── */
@@ -338,6 +340,8 @@ window.__ModuleLoader__.load({
       const [pins, setPins] = useState([])
       const [artifacts, setArtifacts] = useState([])
       const [artScanning, setArtScanning] = useState(false) // 服务端会话索引后台扫描中
+      const [trashItems, setTrashItems] = useState([])     // 回收站条目
+      const [purgeName, setPurgeName] = useState('')       // 待二次确认彻底删除的条目
       const [libRoot, setLibRoot] = useState('')          // 库根绝对路径（@引用用）
       const [cwd, setCwd] = useState('')
       const [file, setFile] = useState(null)             // 内容区打开的文件
@@ -411,6 +415,9 @@ window.__ModuleLoader__.load({
       const loadArtifacts = useCallback(() => {
         api('/artifacts').then(b => { setArtifacts(b.items || []); setArtScanning(!!b.scanning) }).catch(() => {})
       }, [])
+      const loadTrash = useCallback(() => {
+        api('/trash').then(b => setTrashItems(b.items || [])).catch(() => {})
+      }, [])
       const refresh = useCallback(() => {
         api('/tree').then(b => setTree(b.items || [])).catch(() => {})
         api('/metas').then(b => setAllMeta(b.items || {})).catch(() => {})
@@ -418,8 +425,25 @@ window.__ModuleLoader__.load({
         api('/pins').then(b => setPins(b.items || [])).catch(() => {})
         api('/root').then(b => setLibRoot(b.root || '')).catch(() => {})
         loadArtifacts()
-      }, [loadArtifacts])
+        loadTrash()
+      }, [loadArtifacts, loadTrash])
       useEffect(() => { refresh() }, [refresh])
+      const restoreTrash = async (t) => {
+        try {
+          await post('/trash-restore', { name: t.name })
+          say('已恢复到 ' + t.originalPath)
+          refresh()
+        } catch (e) { say('恢复失败：' + e.message) }
+      }
+      const purgeTrash = async (t) => {
+        if (purgeName !== t.name) { setPurgeName(t.name); return }
+        setPurgeName('')
+        try {
+          await post('/trash-purge', { name: t.name })
+          say('已彻底删除 ' + t.originalPath)
+          loadTrash()
+        } catch (e) { say('删除失败：' + e.message) }
+      }
       // 打开本地产物弹层时重拉产物，保证看到的不是页面加载时的旧快照
       useEffect(() => {
         if (overlay) loadArtifacts()
@@ -542,6 +566,24 @@ window.__ModuleLoader__.load({
           .catch(() => setFile({ path, kind: 'error', text: null }))
       }, [])
 
+      /* 编辑自动保存：输入停下 800ms 落盘，失焦立即保存 */
+      const saveNow = (content) => {
+        const path = file && file.kind === 'text' ? file.path : null
+        if (!path) return
+        setSaveState('保存中…')
+        api('/file', {
+          method: 'PUT',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ path, content }),
+        })
+          .then(() => setSaveState('已保存'))
+          .catch(err => setSaveState('保存失败：' + (err && err.message ? err.message : String(err))))
+      }
+      const scheduleSave = (content) => {
+        if (saveTimer.current) clearTimeout(saveTimer.current)
+        saveTimer.current = setTimeout(() => saveNow(content), 800)
+      }
+
       /* 弹层抽屉（只读预览） */
       const openDrawer = useCallback((path, abs) => {
         const isAbs = !!abs
@@ -573,7 +615,7 @@ window.__ModuleLoader__.load({
         while (walker.nextNode()) {
           const n = walker.currentNode
           if (!n.nodeValue || !n.nodeValue.toLowerCase().includes(ql)) continue
-          if (n.parentNode.closest('.wb-lineno, script, style')) continue
+          if ((n.parentNode as Element).closest('.wb-lineno, script, style')) continue
           nodes.push(n)
         }
         const hits = []
@@ -918,7 +960,7 @@ window.__ModuleLoader__.load({
         if (!menu) return null
         const node = menu.node
         const isDir = node.kind === 'directory'
-        const item = (label, onClick, danger, icon) => h('div', {
+        const item = (label, onClick, danger = false, icon = null) => h('div', {
           key: label,
           className: 'wb-menu-item' + (danger ? ' danger' : ''),
           onClick: e => { e.stopPropagation(); onClick() },
@@ -1093,6 +1135,40 @@ window.__ModuleLoader__.load({
         })
       }
 
+      /* ── 回收站 ── */
+      const trashRows = () => {
+        if (trashItems.length === 0) {
+          return h('div', { className: 'wb-empty' },
+            h('div', { className: 'wb-empty-icon' }, Icon.trash(40)),
+            h('div', null, '回收站是空的'),
+            h('div', { className: 'wb-empty-sub' }, '删除的文件会先放到这里，可以恢复，也可以彻底删除'))
+        }
+        return trashItems.map(t => {
+          const name = t.originalPath.split('/').pop()
+          const isDir = t.kind === 'directory'
+          return h('div', { key: t.name, className: 'wb-row' },
+            h('span', { className: 'wb-checkcol' }),
+            h('div', { className: 'wb-col-name' },
+              isDir ? imgIcon('folder', 20) : fileIcon(name, 20),
+              h('span', { className: 'wb-filename' }, name),
+              h('span', { className: 'wb-subpath' }, t.originalPath)),
+            h('span', { className: 'wb-col wb-col-type' }, isDir ? '文件夹' : typeLabel(name)),
+            h('span', { className: 'wb-col wb-col-author' }),
+            h('span', { className: 'wb-col wb-col-time' }, fmtTime(t.deletedAt)),
+            h('span', { className: 'wb-col wb-col-size' }, isDir ? '—' : fmtSize(t.size)),
+            h('span', { className: 'wb-col-actions wb-row-actions-visible' },
+              h('span', {
+                className: 'wb-icon-btn', title: '恢复', role: 'button',
+                onClick: e => { e.stopPropagation(); restoreTrash(t) },
+              }, Icon.restore(16)),
+              h('span', {
+                className: 'wb-icon-btn danger' + (purgeName === t.name ? ' on' : ''),
+                title: purgeName === t.name ? '确认彻底删除（再点一次）' : '彻底删除', role: 'button',
+                onClick: e => { e.stopPropagation(); purgeTrash(t) },
+              }, purgeName === t.name ? Icon.check(16) : Icon.trash(16))))
+        })
+      }
+
       /* ── 待确认 ── */
       const pendingRows = () => {
         if (pending.length === 0) {
@@ -1150,7 +1226,7 @@ window.__ModuleLoader__.load({
           const q = oQuery.trim().toLowerCase()
           items = items.filter(a => apath(a).toLowerCase().includes(q) || (a.title || '').toLowerCase().includes(q) || (a.sessionId || '').toLowerCase().includes(q))
         }
-        const byWs = {}
+        const byWs: Record<string, any> = {}
         for (const a of items) {
           // 服务端已把 sessionId 翻译成 DSH 工作区名 + 会话标题；解析不到的走兜底
           const ws = a.ws || '未分组'
@@ -1162,7 +1238,7 @@ window.__ModuleLoader__.load({
           if (a.time > byWs[ws].latest) byWs[ws].latest = a.time
         }
         return Object.values(byWs)
-          .map(g => ({ ...g, sessions: Object.values(g.sessions).sort((a, b) => b.latest.localeCompare(a.latest)) }))
+          .map((g: any) => ({ ...g, sessions: Object.values(g.sessions as Record<string, any>).sort((a: any, b: any) => b.latest.localeCompare(a.latest)) }))
           .sort((a, b) => b.latest.localeCompare(a.latest))
       }, [artifacts, oQuery, oType])
 
@@ -1427,7 +1503,7 @@ window.__ModuleLoader__.load({
                               className: 'wb-editor',
                               value: draft,
                               onChange: e => { setDraft(e.target.value); scheduleSave(e.target.value) },
-                              onBlur: () => { if (saveTimer.current) { clearTimeout(saveTimer.current); scheduleSave(draft) } },
+                              onBlur: () => { if (saveTimer.current) clearTimeout(saveTimer.current); saveNow(draft) },
                             })))
       }
 
@@ -1448,7 +1524,7 @@ window.__ModuleLoader__.load({
       }
 
       /* ── 左侧菜单 ── */
-      const navItem = (key, label, badge, warn) => h('div', {
+      const navItem = (key, label, badge = 0, warn = false) => h('div', {
         className: 'wb-nav-item' + (section === key && !file && !openPending ? ' active' : ''),
         onClick: () => {
           if (key === 'overlay') { setOverlay(true); return }
@@ -1481,9 +1557,15 @@ window.__ModuleLoader__.load({
             onClick: () => setRecentTab(key),
           }, label)
           return h(React.Fragment, null,
-            h('div', { className: 'wb-tabbar' }, tab('recent', '最近访问'), tab('favs', '我的收藏')),
-            listHeader(cols),
-            h('div', { className: 'wb-list' }, recentTab === 'favs' ? favRows() : recentRows()))
+            h('div', { className: 'wb-tabbar' },
+              tab('recent', '最近访问'),
+              tab('favs', '我的收藏'),
+              tab('trash', '回收站' + (trashItems.length ? ' ' + trashItems.length : ''))),
+            listHeader(recentTab === 'trash'
+              ? cols.map(c => c.label === '更新时间' ? { ...c, label: '删除时间', sortKey: undefined } : c)
+              : cols),
+            h('div', { className: 'wb-list' },
+              recentTab === 'favs' ? favRows() : recentTab === 'trash' ? trashRows() : recentRows()))
         }
         if (section === 'pending') {
           return h(React.Fragment, null,
@@ -1807,6 +1889,9 @@ window.__ModuleLoader__.load({
         border-radius: 6px; color: var(--wb-fg2); cursor: pointer; transition: background .12s, color .12s; }
       .wb-icon-btn:hover { background: var(--wb-active); color: var(--wb-fg); }
       .wb-icon-btn.on { color: var(--wb-accent); }
+      .wb-icon-btn.danger { color: var(--wb-dim); }
+      .wb-icon-btn.danger:hover { background: rgba(216,57,49,.1); color: var(--wb-danger); }
+      .wb-icon-btn.danger.on { color: var(--wb-danger); background: rgba(216,57,49,.12); }
       .wb-hit-line { font-size: 12px; color: var(--wb-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
       .wb-rename { flex: 1; min-width: 0; font-size: 13px; padding: 2px 6px; border: 1px solid var(--wb-accent);
         border-radius: 4px; background: var(--wb-bg); color: var(--wb-fg); outline: none; }
