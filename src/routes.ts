@@ -407,10 +407,12 @@ export function registerRoutes(ctx: WebContext): void {
               const isDir = statSync(abs).isDirectory()
               const win = process.platform === 'win32'
               const cmd = win ? 'explorer.exe' : process.platform === 'darwin' ? 'open' : 'xdg-open'
+              // explorer.exe 不认正斜杠：/select,F:/a/b 会静默失败，必须先转成反斜杠
+              const target = win ? abs.replaceAll('/', '\\') : abs
               // 打开所在文件夹：Windows 用 /select 定位文件；其它平台打开父目录
               const args = wantFolder && !isDir
-                ? win ? ['/select,', abs] : [dirname(abs)]
-                : [abs]
+                ? win ? ['/select,', target] : [dirname(abs)]
+                : [target]
               try {
                 spawn(cmd, args, { detached: true, stdio: 'ignore' }).unref()
               } catch {
