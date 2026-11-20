@@ -491,6 +491,11 @@ window.__ModuleLoader__.load({
         }
         return m
       }, [artifacts])
+      /* 产物大小：优先 /artifacts 的 stat，落库文件回退全库元信息 */
+      const artSize = (a) => (
+        typeof a.size === 'number' ? a.size
+          : (a.libPath ? (treeMeta[a.libPath]?.size ?? allMeta[a.libPath]?.size) : undefined)
+      ) || 0
       /* 统一取元信息：树（我的资料）→ 全库（含 inbox）→ 产物台账/索引 */
       const metaFor = (p, abs) => (
         abs ? artifactsMeta[normPath(p)]
@@ -1213,6 +1218,7 @@ window.__ModuleLoader__.load({
                 : artifactGroups.map(g => {
                     const wsOpen = openGroups.has('ws:' + g.ws)
                     const wsCount = g.sessions.reduce((n, s) => n + s.items.length, 0)
+                    const wsSize = g.sessions.reduce((n, s) => n + s.items.reduce((m, a) => m + artSize(a), 0), 0)
                     return h('div', { key: g.ws },
                       h('div', { className: 'wb-row wb-row-group', onClick: () => toggleGroup('ws:' + g.ws) },
                         h('span', { className: 'wb-chevron' + (wsOpen ? ' open' : '') }, Icon.chevron(14)),
@@ -1223,7 +1229,7 @@ window.__ModuleLoader__.load({
                         h('span', { className: 'wb-col wb-col-type' }),
                         h('span', { className: 'wb-col wb-col-author' }),
                         h('span', { className: 'wb-col wb-col-time' }, fmtTime(Date.parse(g.latest) || 0)),
-                        h('span', { className: 'wb-col wb-col-size' }),
+                        h('span', { className: 'wb-col wb-col-size' }, wsSize ? fmtSize(wsSize) : ''),
                         h('span', { className: 'wb-col-actions' })),
                       wsOpen && g.sessions.map(s => {
                         const sOpen = openGroups.has('s:' + g.ws + ' ' + s.sid)
@@ -1232,7 +1238,7 @@ window.__ModuleLoader__.load({
                             h('span', { className: 'wb-chevron' + (sOpen ? ' open' : '') }, Icon.chevron(14)),
                             h('span', { className: 'wb-col-name' },
                               Icon.robot(18),
-                              h('span', { className: 'wb-filename' }, '会话 ' + s.sid),
+                              h('span', { className: 'wb-filename' }, s.sid),
                               h('span', { className: 'wb-pill' }, s.items.length + ' 个产物')),
                             h('span', { className: 'wb-col wb-col-type' }),
                             h('span', { className: 'wb-col wb-col-author' }),
