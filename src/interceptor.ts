@@ -18,6 +18,8 @@ import { enqueue, extractContent } from './pending.js'
 import { pinForRead } from './pins.js'
 import { appendArtifact, sessionIdOf } from './artifacts.js'
 import { scheduleAutoPush } from './cloud.js'
+import { resolvePlacementDir } from './config.js'
+import { resolveSessionMeta } from './sessionmeta.js'
 
 /** 常见写入类工具名（宿主 write/edit/create_file 系；可按宿主实际注册名扩展）。 */
 const WRITE_TOOLS = new Set(['write', 'edit', 'create_file', 'multi_edit', 'str_replace_based_edit_tool'])
@@ -35,20 +37,17 @@ function extractPath(args: Record<string, unknown>): string | undefined {
   return undefined
 }
 
-/** pre-execute 的裁决：拦截修改类写入，其余放行。 */
+/** pre-execute 的裁决：读取类做 pin，修改类写入拦截，其余放行。 */
 export async function preExecute(exec: { name: string; arguments: unknown; agent?: unknown }): Promise<PreDecision> {
-  if (!WRITE_TOOLS.has(exec.name)) return { kind: 'allow' }
   const args = (exec.arguments ?? {}) as Record<string, unknown>
   const target = extractPath(args)
   if (!target) return { kind: 'allow' }
 
-  // 只管库内；库外的写入先放行，post 阶段归位副本
-  if (!isInsideLibrary(target)) return { kind: 'allow' }
-
-  // 读取类工具：固定修订引用（pin）
+  // 读取类工具：固定修订引用（pin），pin 记下会话以便到期自动清理
   if (READ_TOOLS.has(exec.name)) {
+    if (!isInsideLibrary(target)) return { kind: 'allow' }
     const rel = relative(LIBRARY_ROOT, target).replaceAll('\\', '/')
-    const outcome = await pinForRead(target, rel)
+    const outcome = await pinForRead(target, rel, sessionIdOf(exec.agent))
     if (!outcome) return { kind: 'allow' } // 文件不存在等异常，交给原流程报错
     if (!outcome.drifted) return { kind: 'allow' }
     // 已漂移：Agent 拿到的是 pin 时刻版本 + 漂移提示，而非磁盘上的新内容
@@ -62,6 +61,11 @@ export async function preExecute(exec: { name: string; arguments: unknown; agent
         '如需基于最新内容工作，请提示用户在资料库面板「固定引用」中释放该文件的 pin 后重新读取。',
     }
   }
+
+  if (!WRITE_TOOLS.has(exec.name)) return { kind: 'allow' }
+
+  // 只管库内；库外的写入先放行，post 阶段归位副本
+  if (!isInsideLibrary(target)) return { kind: 'allow' }
 
   if (existsSync(target)) {
     // 修改已有文件：内容进持久化待确认队列，不直接落盘
@@ -90,23 +94,26 @@ export async function preExecute(exec: { name: string; arguments: unknown; agent
   return { kind: 'allow' }
 }
 
-/** post-execute 的裁决：库外成功写入的文件，复制一份到 inbox/ 归位。 */
+/** post-execute 的裁决：库外成功写入的文件，复制一份按归位规则落库。 */
 export async function postExecute(exec: { name: string; arguments: unknown; agent?: unknown }, failed: boolean): Promise<void> {
   if (failed || !WRITE_TOOLS.has(exec.name)) return
   const args = (exec.arguments ?? {}) as Record<string, unknown>
   const target = extractPath(args)
   if (!target || isInsideLibrary(target) || !existsSync(target)) return
   try {
-    // v0.1 规则：库外产出统一归位到 inbox/<文件名>；重名文件加时间戳后缀
+    // 规则：会话前缀 → 工作区名 → 默认 inbox/（面板里可编辑，改完即时生效）
     // 源是目录（或无法 stat）时不归位——只搬文件
     const srcStat = await stat(target)
     if (!srcStat.isFile()) return
-    const dest = await relocatedPath(basename(target))
+    const sessionId = sessionIdOf(exec.agent)
+    const meta = await resolveSessionMeta(sessionId).catch(() => null)
+    const dir = await resolvePlacementDir({ sessionId, wsName: meta?.wsName }).catch(() => 'inbox')
+    const dest = await relocatedPath(dir, basename(target))
     await mkdir(dirname(dest), { recursive: true })
     await copyFile(target, dest)
     // 产物台账：会话 → 库内落点，供「会话产物」页签按会话列出
     await appendArtifact({
-      sessionId: sessionIdOf(exec.agent),
+      sessionId,
       tool: exec.name,
       libPath: relative(LIBRARY_ROOT, dest).replaceAll('\\', '/'),
       sourcePath: target,
@@ -119,9 +126,10 @@ export async function postExecute(exec: { name: string; arguments: unknown; agen
   }
 }
 
-/** inbox 内的重名文件用时间戳后缀分开保存（wuzeno 的同名分存思路）。 */
-async function relocatedPath(filename: string): Promise<string> {
-  const primary = inLibrary(join('inbox', filename))
+/** 归位目标内的重名文件用时间戳后缀分开保存（wuzeno 的同名分存思路）。 */
+async function relocatedPath(dir: string, filename: string): Promise<string> {
+  const targetDir = dir || 'inbox'
+  const primary = inLibrary(join(targetDir, filename))
   try {
     await stat(primary)
   } catch {
@@ -130,7 +138,7 @@ async function relocatedPath(filename: string): Promise<string> {
   const dot = filename.lastIndexOf('.')
   const stem = dot > 0 ? filename.slice(0, dot) : filename
   const ext = dot > 0 ? filename.slice(dot) : ''
-  return inLibrary(join('inbox', `${stem}-${Date.now()}${ext}`))
+  return inLibrary(join(targetDir, `${stem}-${Date.now()}${ext}`))
 }
 
 export interface PreDecision {

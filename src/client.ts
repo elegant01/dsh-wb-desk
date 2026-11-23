@@ -342,6 +342,12 @@
       const [artScanning, setArtScanning] = useState(false) // 服务端会话索引后台扫描中
       const [trashItems, setTrashItems] = useState([])     // 回收站条目
       const [purgeName, setPurgeName] = useState('')       // 待二次确认彻底删除的条目
+      const [purgeBatch, setPurgeBatch] = useState(false)  // 批量彻底删除的二次确认
+      /* 首轮请求的加载态：只在这些数据第一次返回前为 true，之后的静默刷新不再闪骨架 */
+      const [treeLoading, setTreeLoading] = useState(true)
+      const [trashLoading, setTrashLoading] = useState(true)
+      const [pendingLoading, setPendingLoading] = useState(true)
+      const [artLoading, setArtLoading] = useState(true)
       const [libRoot, setLibRoot] = useState('')          // 库根绝对路径（@引用用）
       const [cwd, setCwd] = useState('')
       const [file, setFile] = useState(null)             // 内容区打开的文件
@@ -376,6 +382,12 @@
       const [cloudHasSaved, setCloudHasSaved] = useState(false)
       const [cloudStatus, setCloudStatus] = useState('')
       const [cloudBusy, setCloudBusy] = useState(false)
+      /* 自动化：归位规则 + pin 保留天数 */
+      const [showAuto, setShowAuto] = useState(false)
+      const [autoRules, setAutoRules] = useState([])
+      const [pinDays, setPinDays] = useState(7)
+      const [autoStatus, setAutoStatus] = useState('')
+      const [autoBusy, setAutoBusy] = useState(false)
       const uploadInput = useRef(null)
       const importInput = useRef(null)
       const [showFilter, setShowFilter] = useState(false)
@@ -413,15 +425,21 @@
           h('button', { className: 'wb-mini-btn', onClick: () => openExternal(p, abs, 'folder') }, '打开所在文件夹')))
 
       const loadArtifacts = useCallback(() => {
-        api('/artifacts').then(b => { setArtifacts(b.items || []); setArtScanning(!!b.scanning) }).catch(() => {})
+        api('/artifacts')
+          .then(b => { setArtifacts(b.items || []); setArtScanning(!!b.scanning) })
+          .catch(() => {})
+          .finally(() => setArtLoading(false))
       }, [])
       const loadTrash = useCallback(() => {
-        api('/trash').then(b => setTrashItems(b.items || [])).catch(() => {})
+        api('/trash')
+          .then(b => setTrashItems(b.items || []))
+          .catch(() => {})
+          .finally(() => setTrashLoading(false))
       }, [])
       const refresh = useCallback(() => {
-        api('/tree').then(b => setTree(b.items || [])).catch(() => {})
+        api('/tree').then(b => setTree(b.items || [])).catch(() => {}).finally(() => setTreeLoading(false))
         api('/metas').then(b => setAllMeta(b.items || {})).catch(() => {})
-        api('/pending').then(b => setPending(b.items || [])).catch(() => {})
+        api('/pending').then(b => setPending(b.items || [])).catch(() => {}).finally(() => setPendingLoading(false))
         api('/pins').then(b => setPins(b.items || [])).catch(() => {})
         api('/root').then(b => setLibRoot(b.root || '')).catch(() => {})
         loadArtifacts()
@@ -443,6 +461,23 @@
           say('已彻底删除 ' + t.originalPath)
           loadTrash()
         } catch (e) { say('删除失败：' + e.message) }
+      }
+      /* 回收站批量：勾选的 key 是回收站文件名（t.name） */
+      const runTrashBatch = async (action) => {
+        const names = [...selected]
+        if (names.length === 0) return
+        setPurgeBatch(false)
+        setSelected(new Set())
+        try {
+          const b = await post(action === 'restore' ? '/trash-restore' : '/trash-purge', { names })
+          const done = b.ok || 0
+          const fail = Array.isArray(b.failed) ? b.failed.length : 0
+          refresh()
+          const verb = action === 'restore' ? '恢复' : '彻底删除'
+          say(fail
+            ? verb + '了 ' + done + ' 项，' + fail + ' 项未完成' + (action === 'restore' ? '（原位置已有同名文件）' : '')
+            : '已' + verb + ' ' + done + ' 项')
+        } catch (e) { say((action === 'restore' ? '恢复' : '删除') + '失败：' + e.message) }
       }
       // 打开本地产物弹层时重拉产物，保证看到的不是页面加载时的旧快照
       useEffect(() => {
@@ -881,6 +916,43 @@
         } catch (e) { setCloudStatus('同步失败：' + e.message) }
         finally { setCloudBusy(false) }
       }
+
+      /* ── 自动化：归位规则 + 清理 ── */
+      const openAutomation = async () => {
+        setShowAuto(true)
+        setAutoStatus('')
+        try {
+          const b = await api('/config')
+          setAutoRules((b.placement?.rules || []).map(r => ({ ws: r.ws || '', session: r.session || '', dir: r.dir || '' })))
+          setPinDays(typeof b.pinRetentionDays === 'number' ? b.pinRetentionDays : 7)
+        } catch (e) { setAutoStatus('读取失败：' + e.message) }
+      }
+      const addAutoRule = () => setAutoRules(rules => [...rules, { ws: '', session: '', dir: '' }])
+      const updateAutoRule = (idx, patch) => setAutoRules(rules => rules.map((r, i) => i === idx ? { ...r, ...patch } : r))
+      const removeAutoRule = (idx) => setAutoRules(rules => rules.filter((_, i) => i !== idx))
+      const saveAutomation = async () => {
+        const rules = autoRules
+          .map(r => ({ ws: (r.ws || '').trim(), session: (r.session || '').trim(), dir: (r.dir || '').trim() }))
+          .filter(r => r.dir && (r.ws || r.session))
+        if (rules.length !== autoRules.filter(r => (r.dir || '').trim()).length) {
+          setAutoStatus('每条规则都要有目标目录，并填工作区或会话')
+          return
+        }
+        const days = Number(pinDays)
+        if (!Number.isFinite(days) || days < 1 || days > 365) { setAutoStatus('保留天数需填 1–365'); return }
+        setAutoBusy(true)
+        setAutoStatus('')
+        try {
+          const b = await post('/config', { rules, pinRetentionDays: Math.round(days) })
+          setAutoRules((b.placement?.rules || []).map(r => ({ ws: r.ws || '', session: r.session || '', dir: r.dir || '' })))
+          setPinDays(typeof b.pinRetentionDays === 'number' ? b.pinRetentionDays : days)
+          setShowAuto(false)
+          refresh()
+          const m = b.maintenance || {}
+          say('自动化设置已保存' + (m.pins || m.trash ? '（清理 ' + ((m.pins || 0) + (m.trash || 0)) + ' 项过期数据）' : ''))
+        } catch (e) { setAutoStatus('保存失败：' + e.message) }
+        finally { setAutoBusy(false) }
+      }
       const resolvePending = async (id, action) => {
         try {
           const b = await post('/pending/resolve', { id, action })
@@ -905,6 +977,7 @@
         setMenu({ x: e.clientX, y: e.clientY, node, kind })
       }
       const toggleSelect = (path) => {
+        setPurgeBatch(false)
         setSelected(prev => {
           const next = new Set(prev)
           next.has(path) ? next.delete(path) : next.add(path)
@@ -1016,8 +1089,28 @@
       }
 
       /* ── 表头 ── */
-      const listHeader = (cols) => h('div', { className: 'wb-list-header' },
-        h('span', { className: 'wb-checkcol' }),
+      /* ── 首轮加载骨架：果冻式占位行 ── */
+      const skeletonRows = (n = 6) => h('div', { className: 'wb-skeleton' },
+        Array.from({ length: n }, (_, i) => h('div', { className: 'wb-skel-row', key: i },
+          h('span', { className: 'wb-checkcol' }),
+          h('span', { className: 'wb-skel-block wb-skel-icon' }),
+          h('span', { className: 'wb-col-name' },
+            h('span', { className: 'wb-skel-block', style: { width: (140 + (i * 47) % 150) + 'px', height: 12 } })),
+          h('span', { className: 'wb-col wb-col-type' }, h('span', { className: 'wb-skel-block', style: { width: 42, height: 10 } })),
+          h('span', { className: 'wb-col wb-col-author' }, h('span', { className: 'wb-skel-block', style: { width: 28, height: 10 } })),
+          h('span', { className: 'wb-col wb-col-time' }, h('span', { className: 'wb-skel-block', style: { width: 56, height: 10 } })),
+          h('span', { className: 'wb-col wb-col-size' }, h('span', { className: 'wb-skel-block', style: { width: 36, height: 10 } })),
+          h('span', { className: 'wb-col-actions' }))))
+
+      const listHeader = (cols, check = null) => h('div', { className: 'wb-list-header' },
+        check
+          ? h('span', { className: 'wb-checkcol' },
+              h('span', {
+                className: 'wb-checkbox wb-checkbox-head' + (check.all ? ' on' : '') + (check.some && !check.all ? ' partial' : ''),
+                title: check.all ? '取消全选' : '全选',
+                onClick: e => { e.stopPropagation(); check.onToggle() },
+              }, check.all ? Icon.check(11) : check.some ? h('span', { className: 'wb-check-minus' }) : null))
+          : h('span', { className: 'wb-checkcol' }),
         cols.map(c => h('span', {
           key: c.label,
           className: 'wb-col ' + (c.cls || '') + (c.sortKey ? ' sortable' : '') + (sort.key === c.sortKey ? ' is-sorted' : ''),
@@ -1027,6 +1120,7 @@
 
       /* ── 我的资料：当前目录行 ── */
       const fileRows = () => {
+        if (treeLoading) return skeletonRows(7)
         const node = findNode(cwd)
         let rows = (node && node.children) || []
         if (typeFilter !== 'all') {
@@ -1104,6 +1198,7 @@
 
       /* ── 收藏 ── */
       const favRows = () => {
+        if (treeLoading) return skeletonRows(5)
         if (favNodes.length === 0) {
           return h('div', { className: 'wb-empty' },
             h('div', { className: 'wb-empty-icon' }, Icon.star(40)),
@@ -1137,6 +1232,7 @@
 
       /* ── 回收站 ── */
       const trashRows = () => {
+        if (trashLoading) return skeletonRows(4)
         if (trashItems.length === 0) {
           return h('div', { className: 'wb-empty' },
             h('div', { className: 'wb-empty-icon' }, Icon.trash(40)),
@@ -1146,8 +1242,12 @@
         return trashItems.map(t => {
           const name = t.originalPath.split('/').pop()
           const isDir = t.kind === 'directory'
-          return h('div', { key: t.name, className: 'wb-row' },
-            h('span', { className: 'wb-checkcol' }),
+          return h('div', {
+            key: t.name,
+            className: 'wb-row' + (selected.has(t.name) ? ' is-selected' : ''),
+            onClick: () => toggleSelect(t.name),
+          },
+            checkCol(t.name),
             h('div', { className: 'wb-col-name' },
               isDir ? imgIcon('folder', 20) : fileIcon(name, 20),
               h('span', { className: 'wb-filename' }, name),
@@ -1171,6 +1271,7 @@
 
       /* ── 待确认 ── */
       const pendingRows = () => {
+        if (pendingLoading) return skeletonRows(3)
         if (pending.length === 0) {
           return h('div', { className: 'wb-empty' },
             h('div', { className: 'wb-empty-icon' }, Icon.check(40)),
@@ -1288,7 +1389,9 @@
               { label: '大小', cls: 'wb-col-size' },
             ]),
             h('div', { className: 'wb-list' },
-              artifactGroups.length === 0
+              artLoading
+                ? skeletonRows(8)
+                : artifactGroups.length === 0
                 ? h('div', { className: 'wb-empty' },
                     h('div', { className: 'wb-empty-icon' }, Icon.robot(40)),
                     h('div', null, artifacts.length === 0 ? '还没有任务产物' : '没有匹配的产物'),
@@ -1529,6 +1632,7 @@
         onClick: () => {
           if (key === 'overlay') { setOverlay(true); return }
           setOverlay(false); closeDetail(); setSection(key); setQuery('')
+          setSelected(new Set()); setPurgeBatch(false)
         },
       }, Icon[{ recent: 'clock', overlay: 'robot', files: 'folder', pending: 'list' }[key]](15),
         h('span', { style: { flex: 1 } }, label),
@@ -1554,16 +1658,30 @@
         if (section === 'recent') {
           const tab = (key, label) => h('div', {
             className: 'wb-tab' + (recentTab === key ? ' on' : ''),
-            onClick: () => setRecentTab(key),
+            onClick: () => { setRecentTab(key); setSelected(new Set()); setPurgeBatch(false) },
           }, label)
+          const trashSelCount = trashItems.filter(t => selected.has(t.name)).length
+          const allTrashSelected = trashItems.length > 0 && trashSelCount === trashItems.length
           return h(React.Fragment, null,
             h('div', { className: 'wb-tabbar' },
               tab('recent', '最近访问'),
               tab('favs', '我的收藏'),
-              tab('trash', '回收站' + (trashItems.length ? ' ' + trashItems.length : ''))),
-            listHeader(recentTab === 'trash'
-              ? cols.map(c => c.label === '更新时间' ? { ...c, label: '删除时间', sortKey: undefined } : c)
-              : cols),
+              tab('trash', '回收站' + (trashItems.length ? ' ' + trashItems.length : '')),
+              recentTab === 'trash' && h('span', { className: 'wb-tab-note' }, '删除满 30 天的条目会自动彻底删除')),
+            listHeader(
+              recentTab === 'trash'
+                ? cols.map(c => c.label === '更新时间' ? { ...c, label: '删除时间', sortKey: undefined } : c)
+                : cols,
+              recentTab === 'trash' && trashItems.length > 0
+                ? {
+                    all: allTrashSelected,
+                    some: trashSelCount > 0,
+                    onToggle: () => {
+                      setPurgeBatch(false)
+                      setSelected(allTrashSelected ? new Set() : new Set(trashItems.map(t => t.name)))
+                    },
+                  }
+                : null),
             h('div', { className: 'wb-list' },
               recentTab === 'favs' ? favRows() : recentTab === 'trash' ? trashRows() : recentRows()))
         }
@@ -1611,6 +1729,8 @@
           h('div', { style: { flex: 1 } }),
           pins.length > 0 && h('div', { className: 'wb-pins-hint', title: pins.map(p => p.relPath).join('\n') },
             Icon.pin(12), ' 固定引用 ' + pins.length),
+          h('div', { className: 'wb-nav-item', onClick: openAutomation }, Icon.refresh(15),
+            h('span', { style: { flex: 1 } }, '自动归位')),
           h('div', { className: 'wb-nav-item', onClick: openCloud }, Icon.cloud(15), h('span', { style: { flex: 1 } }, '云同步'),
             cloudHasSaved && h('span', { className: 'wb-dot-on', title: '已连接' }),
             h('span', {
@@ -1652,8 +1772,15 @@
         /* 多选操作条 */
         selected.size > 0 && !detailOpen && h('div', { className: 'wb-selbar' },
           h('span', { className: 'wb-selbar-count' }, '已选 ' + selected.size + ' 项'),
-          h('button', { className: 'wb-mini-btn', onClick: () => { copyText([...selected].join('\n'), '已复制 ' + selected.size + ' 条路径') } }, '复制路径'),
-          h('button', { className: 'wb-mini-btn', onClick: () => setSelected(new Set()) }, '取消')),
+          section === 'recent' && recentTab === 'trash'
+            ? h(React.Fragment, null,
+                h('button', { className: 'wb-mini-btn ok', onClick: () => runTrashBatch('restore') }, '恢复'),
+                h('button', {
+                  className: 'wb-mini-btn danger' + (purgeBatch ? ' on' : ''),
+                  onClick: () => { purgeBatch ? runTrashBatch('purge') : setPurgeBatch(true) },
+                }, purgeBatch ? '确认彻底删除？' : '彻底删除'))
+            : h('button', { className: 'wb-mini-btn', onClick: () => { copyText([...selected].join('\n'), '已复制 ' + selected.size + ' 条路径') } }, '复制路径'),
+          h('button', { className: 'wb-mini-btn', onClick: () => { setSelected(new Set()); setPurgeBatch(false) } }, '取消')),
         renderOverlay(),
         renderMenu(),
         h('input', {
@@ -1679,6 +1806,43 @@
             h('div', { className: 'wb-modal-actions' },
               h('button', { className: 'wb-mini-btn', onClick: () => setShowLink(false) }, '取消'),
               h('button', { className: 'wb-mini-btn ok', onClick: addLink }, '添加')))),
+        showAuto && h('div', { className: 'wb-modal-mask', onClick: () => setShowAuto(false) },
+          h('div', { className: 'wb-modal wide wb-modal-auto', onClick: e => e.stopPropagation() },
+            h('div', { className: 'wb-modal-title' }, '自动归位'),
+            h('div', { className: 'wb-modal-sub' }, 'Agent 在库外新建的文件按规则归位；未匹配的统一收进 inbox/。'),
+            h('div', { className: 'wb-auto-section' }, '归位规则'),
+            autoRules.length === 0 && h('div', { className: 'wb-auto-note' }, '还没有规则，所有库外产物都会收进 inbox/'),
+            autoRules.map((rule, i) => h('div', { className: 'wb-rule-row', key: i },
+              h('input', {
+                className: 'wb-modal-input', value: rule.ws, placeholder: '工作区名（可空）',
+                onChange: e => updateAutoRule(i, { ws: e.target.value }),
+              }),
+              h('input', {
+                className: 'wb-modal-input', value: rule.session, placeholder: '会话 id 前缀（可空）',
+                onChange: e => updateAutoRule(i, { session: e.target.value }),
+              }),
+              h('input', {
+                className: 'wb-modal-input', value: rule.dir, placeholder: '归位到，如 projects/周报',
+                onChange: e => updateAutoRule(i, { dir: e.target.value }),
+              }),
+              h('span', {
+                className: 'wb-icon-btn danger', title: '删除这条规则', role: 'button',
+                onClick: () => removeAutoRule(i),
+              }, Icon.x(14)))),
+            h('button', { className: 'wb-mini-btn wb-auto-add', onClick: addAutoRule }, '＋ 添加规则'),
+            h('div', { className: 'wb-auto-section' }, '自动清理'),
+            h('div', { className: 'wb-field' },
+              h('span', { className: 'wb-field-label', style: { width: 60 } }, 'pin 保留'),
+              h('input', {
+                className: 'wb-modal-input', type: 'number', min: 1, max: 365, value: pinDays,
+                onChange: e => setPinDays(e.target.value),
+              }),
+              h('span', { className: 'wb-auto-note' }, '天（会话结束后超过该天数自动释放固定引用）')),
+            h('div', { className: 'wb-auto-note' }, '回收站：删除满 30 天的条目自动彻底删除'),
+            autoStatus && h('div', { className: 'wb-cloud-status' }, autoStatus),
+            h('div', { className: 'wb-modal-actions' },
+              h('button', { className: 'wb-mini-btn', onClick: () => setShowAuto(false) }, '取消'),
+              h('button', { className: 'wb-mini-btn ok', disabled: autoBusy, onClick: saveAutomation }, '保存')))),
         showCloud && h('div', { className: 'wb-modal-mask', onClick: () => setShowCloud(false) },
           h('div', { className: 'wb-modal wide', onClick: e => e.stopPropagation() },
             h('div', { className: 'wb-modal-title' }, '云同步'),
@@ -1830,6 +1994,7 @@
         border-bottom: 2px solid transparent; transition: color .15s, border-color .15s; }
       .wb-tab:hover { color: var(--wb-fg2); }
       .wb-tab.on { color: var(--wb-fg); font-weight: 600; border-bottom-color: var(--wb-accent); }
+      .wb-tab-note { margin-left: auto; font-size: 12px; color: var(--wb-dim); }
       .wb-search-meta { padding: 2px 24px 8px; font-size: 12px; color: var(--wb-dim); }
 
       /* 列表 */
@@ -1858,6 +2023,9 @@
         opacity: 0; transition: opacity .15s, background .15s; cursor: pointer; }
       .wb-row:hover .wb-checkbox, .wb-checkbox.on { opacity: 1; }
       .wb-checkbox.on { background: var(--wb-accent); border-color: var(--wb-accent); }
+      .wb-checkbox.wb-checkbox-head { opacity: 1; }
+      .wb-checkbox.partial { border-color: var(--wb-accent); }
+      .wb-check-minus { width: 8px; height: 2px; border-radius: 1px; background: var(--wb-accent); }
       .wb-chevron { width: 20px; flex-shrink: 0; display: flex; align-items: center; justify-content: center;
         color: var(--wb-fg2); transition: transform .15s; }
       .wb-chevron.open { transform: rotate(90deg); }
@@ -1900,6 +2068,29 @@
       .wb-mini-btn:hover { border-color: var(--wb-dim); }
       .wb-mini-btn.ok { background: var(--wb-accent); border-color: var(--wb-accent); color: #fff; }
       .wb-mini-btn.ok:hover { filter: brightness(1.08); }
+      .wb-mini-btn.danger { color: var(--wb-danger); border-color: rgba(216,57,49,.45); }
+      .wb-mini-btn.danger:hover { background: rgba(216,57,49,.08); border-color: var(--wb-danger); }
+      .wb-mini-btn.danger.on { background: var(--wb-danger); border-color: var(--wb-danger); color: #fff; }
+
+      /* 加载骨架（果冻动效） */
+      .wb-skeleton { padding: 0; }
+      .wb-skel-row { display: flex; align-items: center; gap: 16px; height: 46px; padding: 0 16px; }
+      .wb-skel-block { display: block; border-radius: 6px;
+        background: linear-gradient(180deg, var(--wb-line-strong), var(--wb-line));
+        transform-origin: center; animation: wb-jelly 1.15s cubic-bezier(.45,.05,.55,.95) infinite; }
+      .wb-skel-icon { width: 20px; height: 20px; border-radius: 5px; flex-shrink: 0; }
+      .wb-skel-row:nth-child(2n) .wb-skel-block { animation-delay: .12s; }
+      .wb-skel-row:nth-child(3n) .wb-skel-block { animation-delay: .24s; }
+      .wb-skel-row:nth-child(5n) .wb-skel-block { animation-delay: .36s; }
+      @keyframes wb-jelly {
+        0%, 100% { transform: scale(1); opacity: .75; }
+        28% { transform: scaleY(.68) scaleX(1.05); opacity: 1; }
+        52% { transform: scaleY(1.1) scaleX(.97); opacity: .85; }
+        72% { transform: scaleY(.94) scaleX(1.01); opacity: .95; }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .wb-skel-block { animation: none; opacity: .85; }
+      }
 
       /* 空状态 */
       .wb-empty { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center;
@@ -2027,6 +2218,12 @@
       .wb-modal { width: 320px; background: var(--wb-pop); border-radius: 12px; box-shadow: var(--wb-shadow);
         padding: 18px; display: flex; flex-direction: column; gap: 10px; }
       .wb-modal.wide { width: 420px; }
+      .wb-modal.wb-modal-auto { width: 680px; max-width: 92vw; max-height: 86vh; overflow-y: auto; }
+      .wb-auto-section { font-size: 13px; font-weight: 600; margin-top: 6px; }
+      .wb-auto-note { font-size: 12px; color: var(--wb-dim); }
+      .wb-rule-row { display: flex; align-items: center; gap: 8px; }
+      .wb-rule-row .wb-modal-input { flex: 1; min-width: 0; }
+      .wb-auto-add { align-self: flex-start; }
       .wb-modal-sub { font-size: 12px; color: var(--wb-dim); margin-top: -4px; }
       .wb-field { display: flex; align-items: center; gap: 10px; }
       .wb-field-label { width: 44px; flex-shrink: 0; font-size: 12px; color: var(--wb-fg2); text-align: right; }

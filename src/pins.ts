@@ -12,9 +12,10 @@
 import { createHash } from 'node:crypto'
 import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
-import { mkdir, readFile, writeFile, unlink } from 'node:fs/promises'
+import { mkdir, readdir, readFile, writeFile, unlink, stat } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import { PINS_DIR, inLibrary } from './store.js'
+import { sessionLastActive } from './sessionmeta.js'
 
 export interface Pin {
   id: string
@@ -25,10 +26,12 @@ export interface Pin {
   /** pin 时刻内容的 SHA-256，用于漂移检测。 */
   hash: string
   createdAt: string
+  /** 触发 pin 的会话；用于会话结束后的自动清理。 */
+  sessionId?: string
 }
 
 interface ActiveIndex {
-  [relPath: string]: { pinId: string; hash: string; createdAt: string }
+  [relPath: string]: { pinId: string; hash: string; createdAt: string; sessionId?: string }
 }
 
 const ACTIVE_FILE = join(PINS_DIR, 'active.json')
@@ -67,7 +70,7 @@ export interface PinOutcome {
  * - 有 pin 且未漂移 → 直接复用；
  * - 有 pin 且已漂移 → 保持旧 pin，返回漂移信息（Agent 拿固定版本 + 提示）。
  */
-export async function pinForRead(absPath: string, relPath: string): Promise<PinOutcome | null> {
+export async function pinForRead(absPath: string, relPath: string, sessionId = ''): Promise<PinOutcome | null> {
   if (!existsSync(absPath)) return null
   const current = await readFile(absPath, 'utf8')
   const currentHash = hashOf(current)
@@ -81,10 +84,16 @@ export async function pinForRead(absPath: string, relPath: string): Promise<PinO
       content: current,
       hash: currentHash,
       createdAt: new Date().toISOString(),
+      ...(sessionId && sessionId !== '未知会话' ? { sessionId } : {}),
     }
     await mkdir(PINS_DIR, { recursive: true })
     await writeFile(join(PINS_DIR, `${pin.hash.slice(0, 8)}-${Date.now()}.json`), JSON.stringify(pin, null, 2), 'utf8')
-    index[relPath] = { pinId: pin.id, hash: pin.hash, createdAt: pin.createdAt }
+    index[relPath] = {
+      pinId: pin.id,
+      hash: pin.hash,
+      createdAt: pin.createdAt,
+      ...(pin.sessionId ? { sessionId: pin.sessionId } : {}),
+    }
     await writeActiveIndex(index)
     return { pin, created: true, drifted: false }
   }
@@ -97,12 +106,13 @@ export async function pinForRead(absPath: string, relPath: string): Promise<PinO
       content: current,
       hash: active.hash,
       createdAt: active.createdAt,
+      ...(active.sessionId ? { sessionId: active.sessionId } : {}),
     }
     return { pin, created: false, drifted: false }
   }
 
   // 已漂移：加载旧 pin 快照（可能已被磁盘清理，退化为索引内记录的旧 hash）
-  const pinFile = await findPinFile(active.pinId)
+  const pinFile = await findPinFile(active.hash)
   const pin: Pin = pinFile
     ? JSON.parse(await readFile(pinFile, 'utf8')) as Pin
     : { id: active.pinId, relPath, content: '', hash: active.hash, createdAt: active.createdAt }
@@ -114,11 +124,12 @@ export async function pinForRead(absPath: string, relPath: string): Promise<PinO
   }
 }
 
-async function findPinFile(pinId: string): Promise<string | null> {
+/** 快照文件按内容 hash 前 8 位命名，按 hash 定位（历史上曾误用 pinId 前缀，兜底也试一次）。 */
+async function findPinFile(hash: string): Promise<string | null> {
   try {
-    const { readdir } = await import('node:fs/promises')
     const files = await readdir(PINS_DIR)
-    const hit = files.find(f => f.endsWith('.json') && f !== 'active.json' && f.includes(pinId.slice(0, 8)))
+    const prefix = hash.slice(0, 8).toLowerCase()
+    const hit = files.find(f => f.endsWith('.json') && f !== 'active.json' && f.toLowerCase().startsWith(prefix + '-'))
     return hit ? join(PINS_DIR, hit) : null
   } catch {
     return null
@@ -141,11 +152,61 @@ export async function listActivePins(): Promise<Array<{ relPath: string; pinId: 
   return out
 }
 
-/** 释放（重新固定入口）：删除 pin 索引条目；下次读取会重新固定。 */
+/** 释放（重新固定入口）：删除 pin 索引条目与快照文件；下次读取会重新固定。 */
 export async function releasePin(relPath: string): Promise<boolean> {
   const index = await readActiveIndex()
-  if (!(relPath in index)) return false
+  const active = index[relPath]
+  if (!active) return false
   delete index[relPath]
   await writeActiveIndex(index)
+  const file = await findPinFile(active.hash)
+  if (file) {
+    try { await unlink(file) } catch { /* 快照已不在就算了 */ }
+  }
   return true
+}
+
+const DAY_MS = 86400e3
+/** 没有被索引引用的快照文件超过这个天数就删掉。 */
+const ORPHAN_SNAPSHOT_DAYS = 30
+
+/**
+ * 自动清理：会话最后活动时间（定位不到会话时退回 pin 创建时间）超过保留期即释放。
+ * 同时清掉已无索引引用、且超过 30 天的孤儿快照文件。
+ */
+export async function cleanupPins(retentionDays: number): Promise<number> {
+  const index = await readActiveIndex()
+  const now = Date.now()
+  const keepMs = Math.min(365, Math.max(1, retentionDays)) * DAY_MS
+  let removed = 0
+  for (const [relPath, active] of Object.entries(index)) {
+    const lastActive = active.sessionId
+      ? (await sessionLastActive(active.sessionId)) ?? Date.parse(active.createdAt)
+      : Date.parse(active.createdAt)
+    if (!Number.isFinite(lastActive) || now - lastActive <= keepMs) continue
+    delete index[relPath]
+    const file = await findPinFile(active.hash)
+    if (file) {
+      try { await unlink(file) } catch { /* ignore */ }
+    }
+    removed++
+  }
+  if (removed > 0) await writeActiveIndex(index)
+
+  try {
+    const pinnedPrefixes = new Set(Object.values(index).map(a => a.hash.slice(0, 8).toLowerCase()))
+    for (const f of await readdir(PINS_DIR)) {
+      if (f === 'active.json' || !f.endsWith('.json')) continue
+      if (pinnedPrefixes.has(f.slice(0, 8).toLowerCase())) continue
+      const p = join(PINS_DIR, f)
+      const st = await stat(p)
+      if (now - st.mtimeMs > ORPHAN_SNAPSHOT_DAYS * DAY_MS) {
+        await unlink(p)
+        removed++
+      }
+    }
+  } catch {
+    // 孤儿清理失败不影响返回
+  }
+  return removed
 }

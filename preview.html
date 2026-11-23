@@ -91,6 +91,10 @@
       { relPath: 'projects/需求文档.md', pinId: 'p1', hash: 'aa11', createdAt: '2026-11-18T09:00:00Z', drifted: true },
       { relPath: 'inbox/项目周报.md', pinId: 'p2', hash: 'bb22', createdAt: '2026-11-18T10:30:00Z', drifted: false }
     ],
+    config: {
+      placement: { rules: [{ ws: 'insight-studio', dir: 'projects/周报' }] },
+      pinRetentionDays: 7,
+    },
     /* 全部为虚构演示数据：不出现真实工作区名、会话标题与路径 */
     artifacts: [
       { time: '2026-11-19T09:40:00Z', sessionId: 'sess-1001', tool: 'present', sourcePath: 'D:\\work\\data-lab\\export\\月度报表.xlsx', kind: 'session-file', ws: 'data-lab', title: '整理月度数据', size: 436796 },
@@ -143,6 +147,10 @@
   }
 
   /* ── 拦截 fetch，路由到 mock ── */
+  const seen = new Set()
+  const slowFirst = (path) => path === '/tree' || path === '/artifacts' || path === '/pending' || path === '/trash'
+      ? !seen.has(path) && seen.add(path) && 800
+      : false
   const realFetch = window.fetch.bind(window)
   window.fetch = function (input, opts) {
     const url = typeof input === 'string' ? input : input.url
@@ -151,9 +159,11 @@
     const [path, qs] = route.split('?')
     const params = new URLSearchParams(qs || '')
     const body = opts && opts.body ? JSON.parse(opts.body) : {}
+    const wait = slowFirst(path)
+    const reply = (obj) => wait ? new Promise(r => setTimeout(() => r(mockJson(obj)), wait)) : mockJson(obj)
 
     if (path === '/root') return mockJson({ root: state.root })
-    if (path === '/tree') return mockJson({ items: tree })
+    if (path === '/tree') return reply({ items: tree })
     if (path === '/metas') {
       const flat = {}
       const walk = nodes => (nodes || []).forEach(n => {
@@ -215,26 +225,29 @@
       const kind = /\.(md|csv|html?|txt|cjs|js|mjs|ts|tsx|jsx|py|go|rs|sh|ps1|json|jsonl|ya?ml|toml|sql|css|log)$/i.test(p) ? 'text' : 'binary'
       return mockJson({ path: p, kind, text: kind === 'text' ? files[p] : null })
     }
-    if (path === '/pending') return mockJson({ items: state.pending })
+    if (path === '/pending') return reply({ items: state.pending })
     if (path === '/pending/resolve') {
       state.pending = state.pending.filter(x => x.id !== body.id)
       return mockJson({ ok: true, items: state.pending })
     }
-    if (path === '/trash') return mockJson({ items: state.trash })
-    if (path === '/trash-restore') {
-      state.trash = state.trash.filter(x => x.name !== body.name)
-      return mockJson({ ok: true })
-    }
-    if (path === '/trash-purge') {
-      state.trash = state.trash.filter(x => x.name !== body.name)
-      return mockJson({ ok: true })
+    if (path === '/trash') return reply({ items: state.trash })
+    if (path === '/trash-restore' || path === '/trash-purge') {
+      const names = Array.isArray(body.names) ? body.names : (body.name ? [body.name] : [])
+      state.trash = state.trash.filter(x => !names.includes(x.name))
+      return mockJson(Array.isArray(body.names) ? { ok: names.length, failed: [] } : { ok: true })
     }
     if (path === '/pins') return mockJson({ items: state.pins })
+    if (path === '/config' && (!opts || opts.method !== 'POST')) return mockJson(state.config)
+    if (path === '/config') {
+      const rules = Array.isArray(body.rules) ? body.rules : []
+      state.config = { placement: { rules }, pinRetentionDays: Number(body.pinRetentionDays) || 7 }
+      return mockJson({ ok: true, ...state.config, maintenance: { pins: 0, trash: 0 } })
+    }
     if (path === '/pins/release') {
       state.pins = state.pins.filter(x => x.relPath !== body.path)
       return mockJson({ ok: true, items: state.pins })
     }
-    if (path === '/artifacts') return mockJson({
+    if (path === '/artifacts') return reply({
       /* 真机 /artifacts 会给每条 stat 出 size/mtime，mock 也照此补齐，否则代码文件行会缺大小 */
       items: state.artifacts.map(a => ({ ...a, size: a.size ?? 2048, mtime: a.mtime ?? Date.parse(a.time) })),
       scanning: false,

@@ -10,6 +10,7 @@
 import { initLibrary } from './store.js'
 import { preExecute, postExecute, isFailure } from './interceptor.js'
 import { registerRoutes } from './routes.js'
+import { runMaintenance } from './maintenance.js'
 
 /** cordis 插件身份；inject 声明依赖 tools 服务，缺失时插件不挂载。 */
 export const name = 'dsh-wb-desk'
@@ -20,6 +21,8 @@ interface HostContext {
   on(event: string, listener: (...args: any[]) => Promise<unknown>): unknown
   /** cordis 的依赖注入：webServer 存在时挂 HTTP 路由。 */
   inject?(deps: readonly string[], fn: (webCtx: any) => void): unknown
+  /** cordis 的生命周期清理钩子：插件卸载时回收定时器。 */
+  effect?(fn: () => (() => void) | void): unknown
 }
 
 interface PreToolDecision {
@@ -27,8 +30,21 @@ interface PreToolDecision {
   reason?: string
 }
 
+/** 定期维护间隔：回收站过期条目与 pin 快照。 */
+const MAINTENANCE_INTERVAL_MS = 6 * 60 * 60 * 1000
+
 export async function apply(ctx: HostContext): Promise<void> {
   await initLibrary()
+
+  // 启动即清一次过期回收站条目 / pin；之后每 6 小时一次
+  void runMaintenance().catch(() => {})
+  if (typeof ctx.effect === 'function') {
+    ctx.effect(() => {
+      const timer = setInterval(() => { void runMaintenance().catch(() => {}) }, MAINTENANCE_INTERVAL_MS)
+      ;(timer as { unref?: () => void }).unref?.()
+      return () => clearInterval(timer)
+    })
+  }
 
   // webServer 存在时挂资料库数据路由（headless 组合不受影响）
   if (typeof ctx.inject === 'function') {

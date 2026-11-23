@@ -111,8 +111,7 @@ function parseSessionFile(buf: Buffer): SessionMeta | null {
  * 解析 sessionId → 工作区名 + 会话标题。
  * 任何一步失败都返回 null（调用方用 sessionId 截断展示兜底）。
  */
-export async function resolveSessionMeta(sessionId: string): Promise<SessionMeta | null> {
-  if (!sessionId || sessionId === '未知会话') return null
+export async function resolveSessionMeta(sessionId: string): Promise<SessionMeta | null> {  if (!sessionId || sessionId === '未知会话') return null
   const file = await locateSessionFile(sessionId)
   if (!file) return null
   let mtimeMs: number
@@ -131,4 +130,16 @@ export async function resolveSessionMeta(sessionId: string): Promise<SessionMeta
   }
   metaCache.set(sessionId, { mtimeMs, meta })
   return meta
+}
+
+/** 会话日志的最后活动时间（mtime）；会话结束后不再增长。定位不到返回 null。 */
+export async function sessionLastActive(sessionId: string): Promise<number | null> {
+  if (!sessionId || sessionId === '未知会话') return null
+  const file = await locateSessionFile(sessionId)
+  if (!file) return null
+  try {
+    return (await stat(file)).mtimeMs
+  } catch {
+    return null
+  }
 }

@@ -9,11 +9,11 @@ An artifact space for agents: instead of scattering generated files across sessi
 ## Features
 
 - **Graded writes**: new files written by an agent land immediately; edits to existing library files go through a persistent "Pending" queue and only overwrite the original after you accept them (rejected versions are archived)
-- **Automatic filing**: agent outputs written outside the library are copied into `inbox/`, with timestamps added on name collisions — nothing is overwritten
-- **Pinned revisions**: the first time an agent reads a library file, that revision is pinned; if the file changes later the agent still reads the pinned revision and is warned about drift. Release the pin from the panel in one click
+- **Automatic filing**: agent outputs written outside the library are copied in according to configurable rules (matched by session / workspace, default `inbox/`, editable under "Auto filing" in the panel), with timestamps added on name collisions — nothing is overwritten
+- **Pinned revisions**: the first time an agent reads a library file, that revision is pinned; if the file changes later the agent still reads the pinned revision and is warned about drift. Release the pin from the panel in one click; pins older than the retention window (7 days after the session ends by default) are released automatically
 - **Local artifacts**: all agent outputs grouped by workspace → session → file, with a side drawer preview
 - **Recent / Favorites**: opened files are recorded (library files and session artifacts marked separately); favorites are aggregated across the whole library
-- **Folder management**: recursive tree, text preview, whole-library line search, create/rename/move/delete, upload; deleted items go to a recycle bin (Recent → Recycle bin) where they can be restored or purged
+- **Folder management**: recursive tree, text preview, whole-library line search, create/rename/move/delete, upload; deleted items go to a recycle bin (Recent → Recycle bin) where they can be restored or purged one by one or in bulk, and items older than 30 days are cleaned up automatically
 - **Binary fallback**: files that can't be previewed (PDF/Office/images/media) offer "Open with default app" and "Show in folder" actions
 - **Useful out of the box**: built-in document/sheet/web/folder plus empty Word/Excel/PPT templates that open in your local Office
 - **Optional cloud sync**: Tencent COS mirror, local-first, auto-push after writes. Single-user backup only, no collaboration
@@ -55,7 +55,6 @@ Fully quit DSH (including the tray background process) and restart.
 - No real-time collaboration or shared spaces
 - No RAG / vector search
 - No in-browser Office editing (use the empty templates with your local Office)
-- Planned for the next release: rule-based auto-filing (everything currently lands in `inbox/`), pin auto-cleanup, drag-and-drop, file version snapshots, CSV as an HTML data source
 - Unrelated to `dsh-wb` (WorkBuddy bridge) and `dsh-desk` (desktop edition); the similar names are coincidental
 
 ## License

@@ -19,6 +19,8 @@ import { readArtifacts } from './artifacts.js'
 import { resolveSessionMeta } from './sessionmeta.js'
 import { getDerivedArtifacts } from './artifactindex.js'
 import { loadCloudConfig, saveCloudConfig, syncNow, testCloud, scheduleAutoPush, pushFile, presignCosGet, type CloudConfig } from './cloud.js'
+import { loadConfig, saveConfig } from './config.js'
+import { runMaintenance } from './maintenance.js'
 
 /** 页面内可预览的文本后缀；其余一律提示不支持预览（防二进制塞爆响应）。 */
 const TEXT_EXT = new Set([
@@ -226,6 +228,19 @@ export function registerRoutes(ctx: WebContext): void {
 
             if (route === '/root' && req.method === 'GET') {
               sendJson(res, 200, { root: LIBRARY_ROOT })
+              return
+            }
+
+            // 自动化设置：归位规则 + pin 保留天数（保存后立即跑一次清理）
+            if (route === '/config' && req.method === 'GET') {
+              sendJson(res, 200, await loadConfig())
+              return
+            }
+            if (route === '/config' && req.method === 'POST') {
+              const body = JSON.parse(await readBody(req)) as { rules?: unknown; pinRetentionDays?: unknown }
+              const cfg = await saveConfig(body)
+              const maintenance = await runMaintenance().catch(() => ({ pins: 0, trash: 0 }))
+              sendJson(res, 200, { ok: true, ...cfg, maintenance })
               return
             }
 
@@ -500,7 +515,7 @@ export function registerRoutes(ctx: WebContext): void {
                 await writeFile(safeJoin(rel), template, 'utf8')
               }
               scheduleAutoPush()
-              sendJson(res, 200, { ok: true, path: rel })
+              sendJson(res, 200, { ok: true, path: rel.replaceAll('\\', '/') })
               return
             }
 
@@ -568,9 +583,9 @@ export function registerRoutes(ctx: WebContext): void {
                 sendJson(res, 404, { error: '文件或文件夹不存在' })
                 return
               }
-              // 编码原相对路径进回收站文件名，恢复时可还原位置
+              // 编码原相对路径进回收站文件名，恢复时可还原位置（统一成正斜杠，Windows 传来的反斜杠路径也要能删）
               await mkdir(TRASH_DIR, { recursive: true })
-              const trashName = body.path.replaceAll('/', '%2F') + '.' + Date.now() + '.trash'
+              const trashName = body.path.replaceAll('\\', '/').replaceAll('/', '%2F') + '.' + Date.now() + '.trash'
               await rename(from, join(TRASH_DIR, trashName))
               scheduleAutoPush()
               sendJson(res, 200, { ok: true })
@@ -604,42 +619,88 @@ export function registerRoutes(ctx: WebContext): void {
             }
 
             if (route === '/trash-restore' && req.method === 'POST') {
-              const body = JSON.parse(await readBody(req)) as { name?: string }
-              if (typeof body.name !== 'string' || !body.name.endsWith('.trash')) {
+              const body = JSON.parse(await readBody(req)) as { name?: string; names?: string[] }
+              const single = typeof body.name === 'string' && !Array.isArray(body.names)
+              const raw = Array.isArray(body.names) ? body.names : single ? [body.name] : []
+              const names = raw.filter((n): n is string => typeof n === 'string' && n.endsWith('.trash') && basename(n) === n)
+              if (raw.length === 0 || names.length !== raw.length) {
                 sendJson(res, 400, { error: '参数错误' })
                 return
               }
-              const trashFile = join(TRASH_DIR, basename(body.name))
-              if (!existsSync(trashFile)) {
-                sendJson(res, 404, { error: '回收站里没有这个文件' })
+              let ok = 0
+              const failed: { name: string; error: string; status: number }[] = []
+              for (const name of names) {
+                try {
+                  const trashFile = join(TRASH_DIR, name)
+                  if (!existsSync(trashFile)) {
+                    failed.push({ name, error: '回收站里没有这个文件', status: 404 })
+                    continue
+                  }
+                  /* 文件名形如 <url编码后的原路径>.<删除时间戳>.trash，恢复时要一并剥掉时间戳 */
+                  const base = basename(name, '.trash')
+                  const dot = base.lastIndexOf('.')
+                  const originalRel = (dot > 0 ? base.slice(0, dot) : base).replaceAll('%2F', '/')
+                  const dest = safeJoin(originalRel)
+                  if (existsSync(dest)) {
+                    failed.push({ name, error: '原位置已有同名文件，请先改名或移走后再恢复', status: 409 })
+                    continue
+                  }
+                  await mkdir(dirname(dest), { recursive: true })
+                  await rename(trashFile, dest)
+                  ok++
+                } catch (e) {
+                  failed.push({ name, error: (e as Error).message || '恢复失败', status: 500 })
+                }
+              }
+              if (single) {
+                const f = failed[0]
+                if (f) {
+                  sendJson(res, f.status, { error: f.error })
+                  return
+                }
+                scheduleAutoPush()
+                sendJson(res, 200, { ok: true })
                 return
               }
-              const originalRel = basename(body.name, '.trash').replaceAll('%2F', '/')
-              const dest = safeJoin(originalRel)
-              if (existsSync(dest)) {
-                sendJson(res, 409, { error: '原位置已有同名文件，请先改名或移走后再恢复' })
-                return
-              }
-              await mkdir(dirname(dest), { recursive: true })
-              await rename(trashFile, dest)
-              scheduleAutoPush()
-              sendJson(res, 200, { ok: true })
+              if (ok > 0) scheduleAutoPush()
+              sendJson(res, 200, { ok, failed: failed.map(f => ({ name: f.name, error: f.error })) })
               return
             }
 
             if (route === '/trash-purge' && req.method === 'POST') {
-              const body = JSON.parse(await readBody(req)) as { name?: string }
-              if (typeof body.name !== 'string' || !body.name.endsWith('.trash') || basename(body.name) !== body.name) {
+              const body = JSON.parse(await readBody(req)) as { name?: string; names?: string[] }
+              const single = typeof body.name === 'string' && !Array.isArray(body.names)
+              const raw = Array.isArray(body.names) ? body.names : single ? [body.name] : []
+              const names = raw.filter((n): n is string => typeof n === 'string' && n.endsWith('.trash') && basename(n) === n)
+              if (raw.length === 0 || names.length !== raw.length) {
                 sendJson(res, 400, { error: '参数错误' })
                 return
               }
-              const target = join(TRASH_DIR, body.name)
-              if (!existsSync(target)) {
-                sendJson(res, 404, { error: '回收站里没有这个文件' })
+              let ok = 0
+              const failed: { name: string; error: string; status: number }[] = []
+              for (const name of names) {
+                try {
+                  const target = join(TRASH_DIR, name)
+                  if (!existsSync(target)) {
+                    failed.push({ name, error: '回收站里没有这个文件', status: 404 })
+                    continue
+                  }
+                  await rm(target, { recursive: true, force: true })
+                  ok++
+                } catch (e) {
+                  failed.push({ name, error: (e as Error).message || '删除失败', status: 500 })
+                }
+              }
+              if (single) {
+                const f = failed[0]
+                if (f) {
+                  sendJson(res, f.status, { error: f.error })
+                  return
+                }
+                sendJson(res, 200, { ok: true })
                 return
               }
-              await rm(target, { recursive: true, force: true })
-              sendJson(res, 200, { ok: true })
+              sendJson(res, 200, { ok, failed: failed.map(f => ({ name: f.name, error: f.error })) })
               return
             }
 
