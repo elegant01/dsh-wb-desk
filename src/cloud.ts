@@ -28,6 +28,8 @@ export interface CloudConfig {
   accessKey: string
   secretKey: string
   autoPush?: boolean
+  /** S3 路径风格（七牛 Kodo / MinIO 等只支持 path-style 的服务）。 */
+  pathStyle?: boolean
 }
 
 const CONFIG_FILE = join(META_DIR, 'cloud.json')
@@ -75,6 +77,19 @@ function s3Host(cfg: CloudConfig): { host: string; basePath: string } {
   const u = new URL(cfg.endpoint)
   return { host: cfg.bucket ? `${cfg.bucket}.${u.host}` : u.host, basePath: u.pathname.replace(/\/+$/, '') }
 }
+/**
+ * 请求目标：默认 virtual-hosted（bucket 进域名），pathStyle 时 bucket 进路径
+ * （七牛 Kodo / 多数自建 MinIO 只支持这种）。
+ */
+function s3Target(cfg: CloudConfig): { host: string; basePath: string; bucketPath: string } {
+  const u = new URL(cfg.endpoint)
+  const pathStyle = !!cfg.pathStyle && !!cfg.bucket
+  return {
+    host: cfg.bucket && !pathStyle ? `${cfg.bucket}.${u.host}` : u.host,
+    basePath: u.pathname.replace(/\/+$/, ''),
+    bucketPath: pathStyle ? '/' + encodeKey(cfg.bucket!) : '',
+  }
+}
 function s3Region(cfg: CloudConfig): string {
   if (cfg.region && cfg.region.trim()) return cfg.region.trim()
   const m = s3Host(cfg).host.match(/(?:oss|cos)\.([a-z0-9-]+)\./) || s3Host(cfg).host.match(/\.([a-z0-9-]+)\.amazonaws\./)
@@ -84,13 +99,14 @@ function encodeKey(key: string): string {
   return key.split('/').map(encodeURIComponent).join('/')
 }
 async function s3Request(cfg: CloudConfig, method: string, key: string, query: Record<string, string>, body?: Buffer): Promise<{ status: number; buffer: Buffer }> {
-  const { host, basePath } = s3Host(cfg)
+  const { host, basePath, bucketPath } = s3Target(cfg)
   const region = s3Region(cfg)
   const now = new Date()
   const amzDate = now.toISOString().replace(/[-:]/g, '').replace(/\.\d+/, '')
   const dateStamp = amzDate.slice(0, 8)
   const payloadHash = sha256hex(body ?? '')
-  const path = basePath + (key ? '/' + encodeKey(key) : '/')
+  // path-style 列桶时不带尾部斜杠；带 key 时拼在 bucket 之后
+  const path = basePath + bucketPath + (key ? '/' + encodeKey(key) : bucketPath ? '' : '/')
   const sortedQuery = Object.keys(query).sort()
     .map(k => encodeURIComponent(k) + '=' + encodeURIComponent(query[k])).join('&')
   const canonicalHeaders = `host:${host}\nx-amz-content-sha256:${payloadHash}\nx-amz-date:${amzDate}\n`

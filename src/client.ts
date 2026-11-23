@@ -378,7 +378,7 @@
       const [showLink, setShowLink] = useState(false)
       const [linkForm, setLinkForm] = useState({ name: '', url: '' })
       const [showCloud, setShowCloud] = useState(false)
-      const [cloudCfg, setCloudCfg] = useState({ protocol: 'cos', endpoint: '', bucket: '', prefix: 'dsh-library', region: '', accessKey: '', secretKey: '', autoPush: true })
+      const [cloudCfg, setCloudCfg] = useState({ protocol: 'cos', endpoint: '', bucket: '', prefix: 'dsh-library', region: '', accessKey: '', secretKey: '', autoPush: true, pathStyle: false })
       const [cloudHasSaved, setCloudHasSaved] = useState(false)
       const [cloudStatus, setCloudStatus] = useState('')
       const [cloudBusy, setCloudBusy] = useState(false)
@@ -1849,33 +1849,44 @@
             h('div', { className: 'wb-modal-sub' }, '本地库保持不变，云端做镜像；按修改时间新盖旧，删除不同步'),
             h('div', { className: 'wb-field' },
               h('span', { className: 'wb-field-label' }, '协议'),
-              h('span', { className: 'wb-modal-static' }, '腾讯云 COS')),
+              h('select', {
+                className: 'wb-modal-input',
+                value: cloudCfg.protocol,
+                onChange: e => setCloudCfg(c => ({ ...c, protocol: e.target.value })),
+              },
+                h('option', { value: 'cos' }, '腾讯云 COS'),
+                h('option', { value: 's3' }, 'S3 兼容（阿里 OSS / AWS / R2 / 七牛 / MinIO）'),
+                h('option', { value: 'webdav' }, 'WebDAV'))),
             h('div', { className: 'wb-field' },
               h('span', { className: 'wb-field-label' }, '地址'),
               h('input', {
                 className: 'wb-modal-input', value: cloudCfg.endpoint,
-                placeholder: 'https://cos.ap-guangzhou.myqcloud.com',
+                placeholder: cloudCfg.protocol === 'cos'
+                  ? 'https://cos.ap-guangzhou.myqcloud.com'
+                  : cloudCfg.protocol === 'webdav'
+                    ? 'https://dav.example.com/目录'
+                    : 'S3 端点，如 https://s3.oss-cn-guangzhou.aliyuncs.com',
                 onChange: e => setCloudCfg(c => ({ ...c, endpoint: e.target.value })),
               })),
-            h('div', { className: 'wb-field' },
+            cloudCfg.protocol !== 'webdav' && h('div', { className: 'wb-field' },
               h('span', { className: 'wb-field-label' }, 'Bucket'),
               h('input', {
                 className: 'wb-modal-input', value: cloudCfg.bucket,
-                placeholder: '存储桶名-APPID，如 mylib-1300000000',
+                placeholder: cloudCfg.protocol === 'cos' ? '存储桶名-APPID，如 mylib-1300000000' : '桶名（七牛 / MinIO 只填名字）',
                 onChange: e => setCloudCfg(c => ({ ...c, bucket: e.target.value })),
               })),
             h('div', { className: 'wb-field' },
-              h('span', { className: 'wb-field-label' }, '账号'),
+              h('span', { className: 'wb-field-label' }, cloudCfg.protocol === 'webdav' ? '用户名' : '账号'),
               h('input', {
                 className: 'wb-modal-input', value: cloudCfg.accessKey,
-                placeholder: 'SecretId',
+                placeholder: cloudCfg.protocol === 'webdav' ? '用户名' : 'SecretId / AccessKey',
                 onChange: e => setCloudCfg(c => ({ ...c, accessKey: e.target.value })),
               })),
             h('div', { className: 'wb-field' },
-              h('span', { className: 'wb-field-label' }, '密钥'),
+              h('span', { className: 'wb-field-label' }, cloudCfg.protocol === 'webdav' ? '密码' : '密钥'),
               h('input', {
                 className: 'wb-modal-input', type: 'password', value: cloudCfg.secretKey,
-                placeholder: cloudHasSaved ? '已保存，不修改可留空' : 'SecretKey',
+                placeholder: cloudHasSaved ? '已保存，不修改可留空' : (cloudCfg.protocol === 'webdav' ? '密码' : 'SecretKey'),
                 onChange: e => setCloudCfg(c => ({ ...c, secretKey: e.target.value })),
               })),
             h('div', { className: 'wb-field' },
@@ -1887,9 +1898,18 @@
             cloudCfg.protocol === 's3' && h('div', { className: 'wb-field' },
               h('span', { className: 'wb-field-label' }, 'Region'),
               h('input', {
-                className: 'wb-modal-input', value: cloudCfg.region, placeholder: '留空自动识别；R2 填 auto',
+                className: 'wb-modal-input', value: cloudCfg.region, placeholder: '必填：如 cn-guangzhou / cn-east-1；R2 填 auto',
                 onChange: e => setCloudCfg(c => ({ ...c, region: e.target.value })),
               })),
+            cloudCfg.protocol === 's3' && h('label', {
+              className: 'wb-fav-filter', style: { alignSelf: 'flex-start' },
+              title: '七牛 Kodo / MinIO 等只支持 path-style 的服务勾选；OSS、AWS S3、R2 不勾',
+            },
+              h('input', {
+                type: 'checkbox', checked: !!cloudCfg.pathStyle,
+                onChange: e => setCloudCfg(c => ({ ...c, pathStyle: e.target.checked })),
+              }),
+              '路径风格（Path-style，七牛 / MinIO 必选）'),
             h('label', { className: 'wb-fav-filter', style: { alignSelf: 'flex-start' } },
               h('input', {
                 type: 'checkbox', checked: cloudCfg.autoPush,

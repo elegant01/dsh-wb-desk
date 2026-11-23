@@ -768,6 +768,7 @@ export function registerRoutes(ctx: WebContext): void {
                 accessKey: typeof body.accessKey === 'string' ? body.accessKey : (old?.accessKey ?? ''),
                 secretKey: body.secretKey === '__keep__' || body.secretKey === undefined ? (old?.secretKey ?? '') : body.secretKey,
                 autoPush: !!body.autoPush,
+                pathStyle: !!body.pathStyle,
               }
               if (!cfg.accessKey) { sendJson(res, 400, { error: '访问账号不能为空' }); return }
               await saveCloudConfig(cfg)
