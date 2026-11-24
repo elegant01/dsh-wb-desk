@@ -20,6 +20,7 @@ import { appendArtifact, sessionIdOf } from './artifacts.js'
 import { scheduleAutoPush } from './cloud.js'
 import { resolvePlacementDir } from './config.js'
 import { resolveSessionMeta } from './sessionmeta.js'
+import { pushFileNotice } from './notices.js'
 
 /** 常见写入类工具名（宿主 write/edit/create_file 系；可按宿主实际注册名扩展）。 */
 const WRITE_TOOLS = new Set(['write', 'edit', 'create_file', 'multi_edit', 'str_replace_based_edit_tool'])
@@ -99,13 +100,25 @@ export async function postExecute(exec: { name: string; arguments: unknown; agen
   if (failed || !WRITE_TOOLS.has(exec.name)) return
   const args = (exec.arguments ?? {}) as Record<string, unknown>
   const target = extractPath(args)
-  if (!target || isInsideLibrary(target) || !existsSync(target)) return
+  if (!target || !existsSync(target)) return
+  const sessionId = sessionIdOf(exec.agent)
+  // 库内新建（已有文件的修改在 pre 阶段进了待确认，不会走到这里）：直接入库，弹气泡
+  if (isInsideLibrary(target)) {
+    const meta = await resolveSessionMeta(sessionId).catch(() => null)
+    pushFileNotice({
+      kind: 'saved',
+      name: basename(target),
+      libPath: relative(LIBRARY_ROOT, target).replaceAll('\\', '/'),
+      sessionId,
+      sessionTitle: meta?.title,
+    })
+    return
+  }
   try {
     // 规则：会话前缀 → 工作区名 → 默认 inbox/（面板里可编辑，改完即时生效）
     // 源是目录（或无法 stat）时不归位——只搬文件
     const srcStat = await stat(target)
     if (!srcStat.isFile()) return
-    const sessionId = sessionIdOf(exec.agent)
     const meta = await resolveSessionMeta(sessionId).catch(() => null)
     const dir = await resolvePlacementDir({ sessionId, wsName: meta?.wsName }).catch(() => 'inbox')
     const dest = await relocatedPath(dir, basename(target))
@@ -121,6 +134,14 @@ export async function postExecute(exec: { name: string; arguments: unknown; agen
     })
     // 归位入库也触发云端镜像（防抖 5 秒，未配置/未开启时 no-op）
     scheduleAutoPush()
+    pushFileNotice({
+      kind: 'relocated',
+      name: basename(dest),
+      libPath: relative(LIBRARY_ROOT, dest).replaceAll('\\', '/'),
+      sourcePath: target,
+      sessionId,
+      sessionTitle: meta?.title,
+    })
   } catch {
     // 归位失败不阻断原工具调用——生产物仍在原处，用户可手动迁移
   }

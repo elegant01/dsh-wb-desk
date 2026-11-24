@@ -376,6 +376,13 @@ window.__ModuleLoader__.load({
         }
         /* ── 侧栏图标 ── */
         const PanelIcon = () => h('svg', { width: 18, height: 18, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', 'stroke-width': 1.8 }, h('path', { d: 'M4 4h9a3 3 0 0 1 3 3v13H7a3 3 0 0 1-3-3V4z' }), h('path', { d: 'M16 7l4-2v13a2 2 0 0 1-2 2h-2' }), h('path', { d: 'M7 8h5M7 11h5M7 14h3' }));
+        /* ── 跨槽位导航：右下角产物气泡（shell.overlay）→ 资料库「本地产物」并定位会话 ──
+           气泡与资料库分属两个槽位、两棵 React 树，用模块级意图队列 + 监听器衔接；
+           面板未挂载时把意图留在 pending，等 LibraryPage 挂载后消费。 */
+        const artifactNav = {
+            pending: null,
+            listeners: new Set(),
+        };
         /* ── 主面板：左侧菜单（新建/最近使用/本地产物/我的资料）+ 右侧内容区 ── */
         function LibraryPage({ uiWorkspace }) {
             const [section, setSection] = useState('files'); // recent | files | pending
@@ -414,6 +421,8 @@ window.__ModuleLoader__.load({
             const [sort, setSort] = useState({ key: 'name', dir: 1 });
             const [selected, setSelected] = useState(new Set());
             const [openGroups, setOpenGroups] = useState(new Set());
+            const [focusIntent, setFocusIntent] = useState(null); // 气泡跳转：本地产物里要定位的会话
+            const overlayRef = useRef(null);
             const [recents, setRecents] = useState(() => {
                 try {
                     return JSON.parse(localStorage.getItem('wbdesk-recent') || '[]')
@@ -536,6 +545,20 @@ window.__ModuleLoader__.load({
                     say((action === 'restore' ? '恢复' : '删除') + '失败：' + e.message);
                 }
             };
+            // 气泡跳转：打开本地产物并按会话定位；面板未挂载时的意图由 pending 兜住
+            useEffect(() => {
+                const handle = (intent) => {
+                    artifactNav.pending = null;
+                    setOverlay(true);
+                    setFocusIntent({ ...intent, at: Date.now(), scrolled: false });
+                };
+                artifactNav.listeners.add(handle);
+                if (artifactNav.pending)
+                    handle(artifactNav.pending);
+                return () => { artifactNav.listeners.delete(handle); };
+            }, []);
+            useEffect(() => { if (!overlay)
+                setFocusIntent(null); }, [overlay]);
             // 打开本地产物弹层时重拉产物，保证看到的不是页面加载时的旧快照
             useEffect(() => {
                 if (overlay)
@@ -1411,11 +1434,43 @@ window.__ModuleLoader__.load({
                     .map((g) => ({ ...g, sessions: Object.values(g.sessions).sort((a, b) => b.latest.localeCompare(a.latest)) }))
                     .sort((a, b) => b.latest.localeCompare(a.latest));
             }, [artifacts, oQuery, oType]);
+            // 气泡跳转的落点：产物加载后展开所在工作区+会话分组，滚动并在会话行上留高亮
+            useEffect(() => {
+                if (!overlay || !focusIntent)
+                    return;
+                const bySession = (a) => (focusIntent.sessionId && a.sessionId === focusIntent.sessionId)
+                    || (!focusIntent.sessionId && focusIntent.sessionTitle && a.title === focusIntent.sessionTitle);
+                const hit = artifacts.find(bySession);
+                if (!hit)
+                    return;
+                const ws = hit.ws || '未分组';
+                const sid = hit.title || (hit.sessionId ? hit.sessionId.replace(/^session-/, '').slice(0, 8) : '未知会话');
+                setOpenGroups(prev => {
+                    const wsKey = 'ws:' + ws;
+                    const sKey = 's:' + ws + ' ' + sid;
+                    if (prev.has(wsKey) && prev.has(sKey))
+                        return prev;
+                    const next = new Set(prev);
+                    next.add(wsKey);
+                    next.add(sKey);
+                    return next;
+                });
+                if (focusIntent.scrolled)
+                    return;
+                setFocusIntent(fi => fi && { ...fi, scrolled: true });
+                // 等展开后的分组渲染出来再滚
+                requestAnimationFrame(() => requestAnimationFrame(() => {
+                    const box = overlayRef.current;
+                    const row = box && box.querySelector('.wb-row-l1.wb-focus');
+                    if (row && typeof row.scrollIntoView === 'function')
+                        row.scrollIntoView({ block: 'center', behavior: 'smooth' });
+                }));
+            }, [overlay, focusIntent, artifacts]);
             const renderOverlay = () => {
                 if (!overlay)
                     return null;
                 const filterLabel = (TYPE_FILTERS.find(([v]) => v === oType) || TYPE_FILTERS[0])[1];
-                return h('div', { className: 'wb-overlay' }, 
+                return h('div', { className: 'wb-overlay', ref: overlayRef }, 
                 /* 顶栏：左上角返回资料库 */
                 h('div', { className: 'wb-overlay-top' }, h('span', { className: 'wb-back-link', onClick: () => { setOverlay(false); setDrawer(null); } }, Icon.back(15), '返回资料库'), h('span', { className: 'wb-overlay-title' }, '本地产物'), artScanning && h('span', { className: 'wb-pill' }, '正在索引历史会话…')), 
                 /* 筛选区 */
@@ -1450,7 +1505,9 @@ window.__ModuleLoader__.load({
                             const wsSize = g.sessions.reduce((n, s) => n + s.items.reduce((m, a) => m + artSize(a), 0), 0);
                             return h('div', { key: g.ws }, h('div', { className: 'wb-row wb-row-group', onClick: () => toggleGroup('ws:' + g.ws) }, h('span', { className: 'wb-chevron' + (wsOpen ? ' open' : '') }, Icon.chevron(14)), h('span', { className: 'wb-col-name' }, imgIcon('folder', 20), h('span', { className: 'wb-taskname' }, g.ws), h('span', { className: 'wb-pill' }, wsCount + ' 个产物')), h('span', { className: 'wb-col wb-col-type' }), h('span', { className: 'wb-col wb-col-author' }), h('span', { className: 'wb-col wb-col-time' }, fmtTime(Date.parse(g.latest) || 0)), h('span', { className: 'wb-col wb-col-size' }, wsSize ? fmtSize(wsSize) : ''), h('span', { className: 'wb-col-actions' })), wsOpen && g.sessions.map(s => {
                                 const sOpen = openGroups.has('s:' + g.ws + ' ' + s.sid);
-                                return h('div', { key: s.sid }, h('div', { className: 'wb-row wb-row-l1', onClick: () => toggleGroup('s:' + g.ws + ' ' + s.sid) }, h('span', { className: 'wb-chevron' + (sOpen ? ' open' : '') }, Icon.chevron(14)), h('span', { className: 'wb-col-name' }, Icon.robot(18), h('span', { className: 'wb-filename' }, s.sid), h('span', { className: 'wb-pill' }, s.items.length + ' 个产物')), h('span', { className: 'wb-col wb-col-type' }), h('span', { className: 'wb-col wb-col-author' }), h('span', { className: 'wb-col wb-col-time' }, fmtTime(Date.parse(s.latest) || 0)), h('span', { className: 'wb-col wb-col-size' }), h('span', { className: 'wb-col-actions' })), sOpen && s.items.map((a, i) => {
+                                const isFocus = !!focusIntent && s.items.some(a => (focusIntent.sessionId && a.sessionId === focusIntent.sessionId)
+                                    || (focusIntent.sessionTitle && a.title === focusIntent.sessionTitle));
+                                return h('div', { key: s.sid }, h('div', { className: 'wb-row wb-row-l1' + (isFocus ? ' wb-focus' : ''), onClick: () => toggleGroup('s:' + g.ws + ' ' + s.sid) }, h('span', { className: 'wb-chevron' + (sOpen ? ' open' : '') }, Icon.chevron(14)), h('span', { className: 'wb-col-name' }, Icon.robot(18), h('span', { className: 'wb-filename' }, s.sid), h('span', { className: 'wb-pill' }, s.items.length + ' 个产物')), h('span', { className: 'wb-col wb-col-type' }), h('span', { className: 'wb-col wb-col-author' }), h('span', { className: 'wb-col wb-col-time' }, fmtTime(Date.parse(s.latest) || 0)), h('span', { className: 'wb-col wb-col-size' }), h('span', { className: 'wb-col-actions' })), sOpen && s.items.map((a, i) => {
                                     const apath = a.libPath || a.sourcePath || '';
                                     const name = apath.split(/[\\/]/).pop();
                                     const node = { path: apath, name, kind: 'file', abs: !a.libPath };
@@ -1970,6 +2027,8 @@ window.__ModuleLoader__.load({
         cursor: pointer; padding: 4px 8px; border-radius: 6px; }
       .wb-back-link:hover { background: var(--wb-hover); color: var(--wb-fg); }
       .wb-overlay-title { font-size: 16px; font-weight: 600; }
+      /* 从产物气泡跳转时定位到的会话行 */
+      .wb-row-l1.wb-focus { background: rgba(28,110,212,.08); box-shadow: inset 2px 0 0 var(--wb-accent); }
 
       /* 右侧抽屉 */
       .wb-drawer { position: absolute; top: 0; right: 0; bottom: 0; width: min(560px, 58%); z-index: 40;
@@ -2080,6 +2139,129 @@ window.__ModuleLoader__.load({
       .wb-modal-input:focus { border-color: var(--wb-accent); }
       .wb-modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }
     `;
+        /* ── 会话产物气泡：右下角悬浮，几秒后自动消失（形态对齐 memory-watchdog 的 toast）── */
+        const NOTICE_POLL_MS = 1500;
+        const NOTICE_TTL_MS = 5000;
+        const NOTICE_MAX = 4;
+        const NOTICE_STYLE_ID = 'dsh-wb-desk-notice-style';
+        function ensureNoticeStyle() {
+            if (typeof document === 'undefined' || !document.head || document.getElementById(NOTICE_STYLE_ID))
+                return;
+            const style = document.createElement('style');
+            style.id = NOTICE_STYLE_ID;
+            style.textContent =
+                '@keyframes dsh-wb-notice-in{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}' +
+                    '.wb-notice-card{pointer-events:auto;cursor:pointer;outline:none;box-shadow:0 4px 16px rgba(0,0,0,0.16);' +
+                    'transition:box-shadow .15s ease,transform .15s ease}' +
+                    '.wb-notice-card:hover{box-shadow:0 6px 22px rgba(0,0,0,0.22);transform:translateY(-1px)}' +
+                    '.wb-notice-card:focus-visible{outline:2px solid #4c8dff;outline-offset:2px}';
+            document.head.appendChild(style);
+        }
+        function noticeTitle(n) {
+            return n.sessionTitle ? '会话「' + n.sessionTitle + '」产生文件' : 'Agent 产生文件';
+        }
+        function noticeLine(n) {
+            return n.kind === 'relocated' ? '已归位到资料库 · ' + n.libPath : '已保存到资料库 · ' + n.libPath;
+        }
+        function FileNoticeToasts({ onOpen }) {
+            const [items, setItems] = useState([]);
+            const seen = useRef({ boot: null, id: -1 });
+            const timers = useRef(new Map());
+            const dismiss = (key) => {
+                const timer = timers.current.get(key);
+                if (timer) {
+                    clearTimeout(timer);
+                    timers.current.delete(key);
+                }
+                setItems(cur => cur.filter(x => x.key !== key));
+            };
+            const openItem = (item) => {
+                dismiss(item.key);
+                if (typeof onOpen === 'function') {
+                    try {
+                        onOpen(item);
+                    }
+                    catch { /* 宿主没有 layout 服务时静默降级 */ }
+                }
+            };
+            useEffect(() => {
+                ensureNoticeStyle();
+                let alive = true;
+                const poll = async () => {
+                    let data;
+                    try {
+                        data = await api('/notices?since=' + Math.max(0, seen.current.id));
+                    }
+                    catch {
+                        return;
+                    }
+                    if (!alive || !data || typeof data.lastId !== 'number')
+                        return;
+                    // 首次挂载 / 宿主重启：游标对齐当前末尾，不回放历史气泡
+                    if (seen.current.boot !== data.boot) {
+                        seen.current = { boot: data.boot, id: data.lastId };
+                        return;
+                    }
+                    if (data.lastId <= seen.current.id)
+                        return;
+                    seen.current.id = data.lastId;
+                    const fresh = (data.items || []).slice(-NOTICE_MAX);
+                    if (!fresh.length)
+                        return;
+                    setItems(cur => cur.concat(fresh.map(n => ({ ...n, key: 'n' + n.id }))).slice(-NOTICE_MAX));
+                    for (const n of fresh) {
+                        const key = 'n' + n.id;
+                        if (timers.current.has(key))
+                            continue;
+                        timers.current.set(key, setTimeout(() => dismiss(key), NOTICE_TTL_MS));
+                    }
+                };
+                poll();
+                const timer = setInterval(poll, NOTICE_POLL_MS);
+                return () => {
+                    alive = false;
+                    clearInterval(timer);
+                    for (const t of timers.current.values())
+                        clearTimeout(t);
+                    timers.current.clear();
+                };
+            }, []);
+            if (items.length === 0)
+                return null;
+            return h('div', {
+                style: {
+                    position: 'fixed', right: 16, bottom: 64, zIndex: 2147483002,
+                    display: 'flex', flexDirection: 'column', gap: 8,
+                    pointerEvents: 'none', maxWidth: 360,
+                },
+            }, items.map(item => h('div', {
+                key: item.key,
+                role: 'button',
+                tabIndex: 0,
+                title: '打开资料库 · 本地产物并定位到该会话',
+                className: 'wb-notice-card',
+                onClick: () => openItem(item),
+                onKeyDown: (e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault();
+                        openItem(item);
+                    }
+                },
+                style: {
+                    display: 'flex', gap: 10, alignItems: 'flex-start', padding: '10px 12px',
+                    background: 'var(--dsw-alias-bg-elevated, #ffffff)',
+                    border: '1px solid var(--dsw-alias-border-l2, #e5e7eb)',
+                    borderRadius: 'var(--dsw-radius-md, 8px)',
+                    animation: 'dsh-wb-notice-in .18s ease-out',
+                },
+            }, fileIcon(item.name, 28), h('div', { style: { minWidth: 0, display: 'flex', flexDirection: 'column', gap: 2 } }, h('div', { style: { fontSize: 12, lineHeight: '16px', color: 'var(--dsw-alias-label-tertiary, #8b93a1)' } }, noticeTitle(item)), h('div', {
+                style: {
+                    fontSize: 13, lineHeight: '18px', fontWeight: 600,
+                    color: 'var(--dsw-alias-label-primary, #1f2328)',
+                    overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                },
+            }, item.name), h('div', { style: { fontSize: 12, lineHeight: '16px', color: 'var(--dsw-alias-label-secondary, #5c6570)', wordBreak: 'break-all' } }, noticeLine(item))))));
+        }
         function apply(ctx) {
             /* 可选服务：按需读取，不写进 inject（远程页面没有 session/create 权限时也要能加载）。
                cordis 的 ctx Proxy 读未注入属性会抛，所以两条路都兜住。 */
@@ -2098,6 +2280,40 @@ window.__ModuleLoader__.load({
                     uiWorkspace = undefined;
                 }
             }
+            /* 布局服务：selectPanel 把主面板切到资料库（Plugins 页同一入口）。
+               宿主没有该服务时气泡点击退化为「只打开本地产物」，不影响其余功能。 */
+            let uiLayout;
+            try {
+                uiLayout = typeof ctx.get === 'function' ? ctx.get('layout') : undefined;
+            }
+            catch {
+                uiLayout = undefined;
+            }
+            if (!uiLayout) {
+                try {
+                    uiLayout = ctx.layout;
+                }
+                catch {
+                    uiLayout = undefined;
+                }
+            }
+            const openArtifactNav = (item) => {
+                const intent = {
+                    sessionId: item && item.sessionId && item.sessionId !== '未知会话' ? item.sessionId : undefined,
+                    sessionTitle: item && item.sessionTitle ? item.sessionTitle : undefined,
+                };
+                artifactNav.pending = intent;
+                try {
+                    uiLayout?.selectPanel?.('dsh-wb-desk');
+                }
+                catch { /* 不可用时 LibraryPage 若已挂载仍会接住意图 */ }
+                for (const fn of [...artifactNav.listeners]) {
+                    try {
+                        fn(intent);
+                    }
+                    catch { /* 单个监听器异常不拖累其它 */ }
+                }
+            };
             ctx.effect(() => {
                 const style = document.createElement('style');
                 style.setAttribute('data-plugin', 'dsh-wb-desk');
@@ -2107,6 +2323,7 @@ window.__ModuleLoader__.load({
             }, 'dsh-wb-desk: theme');
             ctx.slots.inject('main', () => ctx.slots.register({ name: 'main', key: 'dsh-wb-desk' }, () => h(LibraryPage, { uiWorkspace })));
             ctx.slots.inject('sidebar.panellist', () => ctx.slots.register({ name: 'sidebar.panellist', id: 'dsh-wb-desk', order: 36, label: () => '资料库' }, PanelIcon));
+            ctx.slots.inject('shell.overlay', () => ctx.slots.register({ name: 'shell.overlay', id: 'dsh-wb-desk.notices' }, () => h(FileNoticeToasts, { onOpen: openArtifactNav })));
         }
         return { name: 'dsh-wb-desk', inject: ['slots'], apply };
     },

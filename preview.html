@@ -142,6 +142,16 @@
     }
   ]
 
+  const mockBoot = 'preview-' + Math.random().toString(36).slice(2, 6)
+  let mockSeq = 0
+  const mockNotices = []
+  /* 控制台可调：__mockFileNotice('报表.xlsx', 'inbox/报表.xlsx', 'relocated', '会话标题', 'sess-1002') */
+  window.__mockFileNotice = (name, libPath, kind, sessionTitle, sessionId) => {
+    mockSeq += 1
+    mockNotices.push({ id: mockSeq, at: new Date().toISOString(), kind: kind || 'relocated', name, libPath, sessionTitle, sessionId })
+    return mockSeq
+  }
+
   function mockJson(obj) {
     return Promise.resolve(new Response(JSON.stringify(obj), { status: 200, headers: { 'content-type': 'application/json' } }))
   }
@@ -163,6 +173,10 @@
     const reply = (obj) => wait ? new Promise(r => setTimeout(() => r(mockJson(obj)), wait)) : mockJson(obj)
 
     if (path === '/root') return mockJson({ root: state.root })
+    if (path === '/notices') {
+      const since = Number(params.get('since')) || 0
+      return mockJson({ boot: mockBoot, lastId: mockSeq, items: mockNotices.filter(n => n.id > since) })
+    }
     if (path === '/tree') return reply({ items: tree })
     if (path === '/metas') {
       const flat = {}
@@ -279,7 +293,7 @@
   /* ── 挂载插件面板 ── */
   document.addEventListener('DOMContentLoaded', () => {
     const mod = window.__plugin__
-    const slots = { main: null }
+    const slots = { main: null, overlay: null }
     const ctx = {
       effect: (fn) => fn(),
       /* mock 宿主导航：记录「添加到任务」的预填草稿，便于预览里自验 */
@@ -290,13 +304,23 @@
         inject: (name, fn) => {
           const r = fn()
           if (name === 'main') slots.main = r.comp
+          if (name === 'shell.overlay') slots.overlay = r.comp
         },
         register: (def, comp) => ({ def, comp }),
+      },
+      /* mock 宿主布局服务：气泡点击 → selectPanel('dsh-wb-desk')（预览里资料库本来就常驻） */
+      layout: {
+        panelInfo: { getSnapshot: () => ({ activePanelId: 'dsh-wb-desk' }), subscribe: () => () => {} },
+        selectPanel: (id) => { window.__lastSelectPanel = id },
       },
     }
     mod.apply(ctx)
     const root = ReactDOM.createRoot(document.getElementById('app'))
-    root.render(React.createElement(slots.main))
+    root.render(React.createElement(React.Fragment, null,
+      React.createElement(slots.main),
+      slots.overlay ? React.createElement(slots.overlay) : null))
+    /* 预览演示：加载后弹一条产物气泡（点它可按会话定位到本地产物） */
+    setTimeout(() => window.__mockFileNotice('月度报表.xlsx', 'inbox/月度报表.xlsx', 'relocated', '核对报表数据', 'sess-1002'), 1800)
   })
 </script>
 </head>

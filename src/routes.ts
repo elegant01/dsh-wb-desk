@@ -21,6 +21,7 @@ import { getDerivedArtifacts } from './artifactindex.js'
 import { loadCloudConfig, saveCloudConfig, syncNow, testCloud, scheduleAutoPush, pushFile, presignCosGet, type CloudConfig } from './cloud.js'
 import { loadConfig, saveConfig } from './config.js'
 import { runMaintenance } from './maintenance.js'
+import { listFileNotices } from './notices.js'
 
 /** 页面内可预览的文本后缀；其余一律提示不支持预览（防二进制塞爆响应）。 */
 const TEXT_EXT = new Set([
@@ -228,6 +229,13 @@ export function registerRoutes(ctx: WebContext): void {
 
             if (route === '/root' && req.method === 'GET') {
               sendJson(res, 200, { root: LIBRARY_ROOT })
+              return
+            }
+
+            // 会话产物气泡：客户端按 since 增量拉取（内存队列，重启即清）
+            if (route === '/notices' && req.method === 'GET') {
+              const since = Number(url.searchParams.get('since')) || 0
+              sendJson(res, 200, listFileNotices(since))
               return
             }
 
