@@ -412,6 +412,43 @@ export async function testCloud(cfg: CloudConfig): Promise<{ ok: boolean; detail
   }
 }
 
+/* ── 同步状态（面板状态灯用；只在内存，重启归零）── */
+export type CloudSyncState = 'idle' | 'syncing' | 'ok' | 'error'
+export interface CloudSyncStatus {
+  state: CloudSyncState
+  /** 最近一次状态变化的时间戳（毫秒）。 */
+  at: number
+  pushed: number
+  pulled: number
+  errors: number
+  /** 失败时的第一条错误，供状态灯 title 展示。 */
+  detail?: string
+}
+let lastStatus: CloudSyncStatus = { state: 'idle', at: 0, pushed: 0, pulled: 0, errors: 0 }
+
+export function cloudSyncStatus(): CloudSyncStatus {
+  return { ...lastStatus }
+}
+
+export function markSyncStarted(): void {
+  lastStatus = { ...lastStatus, state: 'syncing', at: Date.now(), detail: undefined }
+}
+
+export function markSyncResult(r: SyncResult): void {
+  lastStatus = {
+    state: r.errors.length ? 'error' : 'ok',
+    at: Date.now(),
+    pushed: r.pushed,
+    pulled: r.pulled,
+    errors: r.errors.length,
+    detail: r.errors[0],
+  }
+}
+
+export function markSyncFailed(message: string): void {
+  lastStatus = { ...lastStatus, state: 'error', at: Date.now(), detail: message }
+}
+
 /* ── 自动推送（防抖，写操作后调用）── */
 let pushTimer: ReturnType<typeof setTimeout> | null = null
 let pushing = false
@@ -423,11 +460,18 @@ export function scheduleAutoPush(onDone?: (r: SyncResult | null) => void): void 
     try {
       const cfg = await loadCloudConfig()
       if (cfg && cfg.autoPush) {
-        const r = await syncNow(cfg)
-        onDone?.(r)
+        markSyncStarted()
+        try {
+          const r = await syncNow(cfg)
+          markSyncResult(r)
+          onDone?.(r)
+        } catch (e) {
+          // 失败对本地写入仍静默，但要让面板状态灯看见
+          markSyncFailed(e instanceof Error ? e.message : String(e))
+        }
       }
     } catch {
-      // 静默：同步失败绝不影响本地写入
+      // 读配置失败等：同步失败绝不影响本地写入
     } finally {
       pushing = false
     }

@@ -346,6 +346,7 @@
       const [allMeta, setAllMeta] = useState({})          // 含 inbox 的全库 path → {size, mtime}
       const [pending, setPending] = useState([])
       const [pins, setPins] = useState([])
+      const [showPins, setShowPins] = useState(false)       // 固定引用弹窗
       const [artifacts, setArtifacts] = useState([])
       const [artScanning, setArtScanning] = useState(false) // 服务端会话索引后台扫描中
       const [trashItems, setTrashItems] = useState([])     // 回收站条目
@@ -384,6 +385,10 @@
             .filter(r => r && typeof r.path === 'string')
         } catch { return [] }
       })
+      /* 本地产物弹层顶部的会话汇总条：记住已关闭的 key（产物数变化后重新出现） */
+      const [snapDismissed, setSnapDismissed] = useState(() => {
+        try { return localStorage.getItem('wbdesk-snap') || '' } catch { return '' }
+      })
       const [showNew, setShowNew] = useState(false)
       const [showLink, setShowLink] = useState(false)
       const [linkForm, setLinkForm] = useState({ name: '', url: '' })
@@ -392,6 +397,8 @@
       const [cloudHasSaved, setCloudHasSaved] = useState(false)
       const [cloudStatus, setCloudStatus] = useState('')
       const [cloudBusy, setCloudBusy] = useState(false)
+      /* 云同步状态灯：configured + 最近一次同步结果（host 内存态） */
+      const [cloudStat, setCloudStat] = useState({ configured: false, autoPush: false, status: { state: 'idle', at: 0, pushed: 0, pulled: 0, errors: 0 } })
       /* 自动化：归位规则 + pin 保留天数 */
       const [showAuto, setShowAuto] = useState(false)
       const [autoRules, setAutoRules] = useState([])
@@ -456,6 +463,15 @@
         loadTrash()
       }, [loadArtifacts, loadTrash])
       useEffect(() => { refresh() }, [refresh])
+      /* 状态灯：面板挂载期间每 10 秒拉一次最近同步结果（自动化同步发生在后台） */
+      const pullCloudStat = useCallback(() => {
+        api('/cloud/status').then(b => setCloudStat(b)).catch(() => {})
+      }, [])
+      useEffect(() => {
+        pullCloudStat()
+        const t = setInterval(pullCloudStat, 10000)
+        return () => clearInterval(t)
+      }, [pullCloudStat])
       const restoreTrash = async (t) => {
         try {
           await post('/trash-restore', { name: t.name })
@@ -914,6 +930,7 @@
         try {
           await post('/cloud/config', { ...cloudCfg, secretKey: cloudCfg.secretKey || '__keep__' })
           setCloudHasSaved(true)
+          pullCloudStat()
           say('云同步配置已保存')
         } catch (e) { say('保存失败：' + e.message) }
         finally { setCloudBusy(false) }
@@ -935,6 +952,7 @@
           const b = await post('/cloud/sync', {})
           const err = (b.errors || []).length
           setCloudStatus('上传 ' + b.pushed + ' · 下载 ' + b.pulled + ' · 跳过 ' + b.skipped + (err ? ' · 失败 ' + err : ''))
+          pullCloudStat()
           refresh()
         } catch (e) { setCloudStatus('同步失败：' + e.message) }
         finally { setCloudBusy(false) }
@@ -992,6 +1010,18 @@
           setPins(b.items || [])
           say('已释放固定引用')
         } catch (e) { say('操作失败：' + e.message) }
+      }
+      /* 固定引用弹窗里的批量释放（逐条发请求：单条失败不阻断其余） */
+      const releasePins = async (paths) => {
+        let ok = 0
+        for (const p of paths) {
+          try {
+            const b = await post('/pins/release', { path: p })
+            setPins(b.items || [])
+            ok++
+          } catch { /* 单条失败继续 */ }
+        }
+        say(ok ? '已释放 ' + ok + ' 个固定引用' : '释放失败，请稍后再试')
       }
       const openMenu = (e, node, kind) => {
         e.stopPropagation()
@@ -1366,6 +1396,26 @@
           .sort((a, b) => b.latest.localeCompare(a.latest))
       }, [artifacts, oQuery, oType])
 
+      /* 会话收尾汇总：最近活跃会话的产物数 / 仍在 inbox 的数量（弹层顶部一条，可关） */
+      const snapshot = useMemo(() => {
+        const bySess: Record<string, any> = {}
+        for (const a of artifacts) {
+          const sid = a.sessionId || '未知会话'
+          const s = bySess[sid] || (bySess[sid] = { sid, title: '', count: 0, inbox: 0, latest: '' })
+          s.count++
+          if (!s.title && a.title) s.title = a.title
+          if (String(a.libPath || '').split('/')[0] === 'inbox') s.inbox++
+          if (a.time > s.latest) s.latest = a.time
+        }
+        const list = Object.values(bySess).sort((x: any, y: any) => String(y.latest).localeCompare(String(x.latest)))
+        return list[0] || null
+      }, [artifacts])
+      const snapKey = snapshot ? [snapshot.sid, snapshot.count, snapshot.inbox, snapshot.latest].join('|') : ''
+      const dismissSnap = () => {
+        setSnapDismissed(snapKey)
+        try { localStorage.setItem('wbdesk-snap', snapKey) } catch { /* 隐私模式就算了 */ }
+      }
+
       // 气泡跳转的落点：产物加载后展开所在工作区+会话分组，滚动并在会话行上留高亮
       useEffect(() => {
         if (!overlay || !focusIntent) return
@@ -1430,6 +1480,31 @@
                         className: 'wb-menu-item' + (oType === v ? ' active' : ''),
                         onClick: () => { setOType(v); setShowOFilter(false) },
                       }, label))))))),
+          /* 会话收尾汇总：最近会话产出多少、多少还没整理进我的资料 */
+          snapshot && snapKey !== snapDismissed && h('div', { className: 'wb-snap' },
+            Icon.robot(15),
+            h('span', { className: 'wb-snap-text' },
+              '最近会话「' + (snapshot.title || (snapshot.sid === '未知会话' ? '未知会话' : snapshot.sid.replace(/^session-/, '').slice(0, 8))) + '」产出 ' + snapshot.count + ' 个文件',
+              snapshot.inbox > 0 ? '，' + snapshot.inbox + ' 个还在 inbox，未整理进「我的资料」' : '',
+              pending.length > 0 ? '；另有 ' + pending.length + ' 条修改待确认' : ''),
+            h('span', {
+              className: 'wb-snap-link',
+              onClick: () => {
+                setOQuery('')
+                setOType('all')
+                setFocusIntent({
+                  sessionId: snapshot.sid !== '未知会话' ? snapshot.sid : undefined,
+                  sessionTitle: snapshot.title || undefined,
+                  at: Date.now(),
+                  scrolled: false,
+                })
+              },
+            }, '查看'),
+            pending.length > 0 && h('span', {
+              className: 'wb-snap-link',
+              onClick: () => { setOverlay(false); setDrawer(null); setSection('pending') },
+            }, '去处理待确认'),
+            h('span', { className: 'wb-snap-close', title: '关闭（有新产物时还会出现）', onClick: dismissSnap }, Icon.x(12))),
           /* 表头 + 分组列表 */
           h('div', { className: 'wb-body' },
             listHeader([
@@ -1692,6 +1767,15 @@
         h('span', { style: { flex: 1 } }, label),
         badge > 0 && h('span', { className: 'wb-badge' + (warn ? ' warn' : '') }, badge))
 
+      /* 侧栏状态：固定引用过期数 + 云同步状态灯（色/文案由 host 最近一次同步结果决定） */
+      const pinDriftCount = pins.filter(p => p.drifted).length
+      const cs = (cloudStat && cloudStat.status) || {}
+      const syncDotClass = cs.state === 'syncing' ? 'sync' : cs.state === 'error' ? 'err' : cs.state === 'ok' ? 'ok' : 'idle'
+      const syncDotTitle = cs.state === 'syncing' ? '正在同步…'
+        : cs.state === 'error' ? '同步失败：' + (cs.detail || '未知错误（点击查看云同步设置）')
+        : cs.state === 'ok' ? '同步正常 · ' + fmtTime(cs.at) + '（上传 ' + cs.pushed + ' · 下载 ' + cs.pulled + '）'
+        : '已配置，尚未同步'
+
       const detailOpen = !!(file || openPending)
 
       /* ── 内容区 ── */
@@ -1781,12 +1865,21 @@
           navItem('files', '我的资料'),
           navItem('pending', '待确认', pending.length, true),
           h('div', { style: { flex: 1 } }),
-          pins.length > 0 && h('div', { className: 'wb-pins-hint', title: pins.map(p => p.relPath).join('\n') },
-            Icon.pin(12), ' 固定引用 ' + pins.length),
+          pins.length > 0 && h('div', {
+            className: 'wb-pins-hint clickable' + (pinDriftCount ? ' has-drift' : ''),
+            title: '查看固定引用：' + pins.map(p => p.relPath + (p.drifted ? '（引用后文件已变更）' : '')).join('\n'),
+            onClick: () => setShowPins(true),
+          },
+            Icon.pin(12), ' 固定引用 ' + pins.length,
+            pinDriftCount > 0 && h('span', { className: 'wb-pins-warn' }, pinDriftCount + ' 个已过期')),
           h('div', { className: 'wb-nav-item', onClick: openAutomation }, Icon.refresh(15),
             h('span', { style: { flex: 1 } }, '自动归位')),
           h('div', { className: 'wb-nav-item', onClick: openCloud }, Icon.cloud(15), h('span', { style: { flex: 1 } }, '云同步'),
-            cloudHasSaved && h('span', { className: 'wb-dot-on', title: '已连接' }),
+            cloudStat.configured && h('span', {
+              className: 'wb-sync-dot ' + syncDotClass,
+              title: syncDotTitle,
+              onClick: e => { e.stopPropagation(); openCloud() },
+            }),
             h('span', {
               className: 'wb-icon-btn wb-side-refresh', title: '刷新',
               onClick: e => { e.stopPropagation(); refresh() },
@@ -1897,6 +1990,28 @@
             h('div', { className: 'wb-modal-actions' },
               h('button', { className: 'wb-mini-btn', onClick: () => setShowAuto(false) }, '取消'),
               h('button', { className: 'wb-mini-btn ok', disabled: autoBusy, onClick: saveAutomation }, '保存')))),
+        /* 固定引用：Agent 首次读取的文件版本；漂移后 Agent 仍读到固定版本，直到释放 */
+        showPins && h('div', { className: 'wb-modal-mask', onClick: () => setShowPins(false) },
+          h('div', { className: 'wb-modal wide', onClick: e => e.stopPropagation() },
+            h('div', { className: 'wb-modal-title' }, '固定引用'),
+            h('div', { className: 'wb-modal-sub' }, 'Agent 首次读取文件时固定当时的版本；文件之后被修改，Agent 仍读到固定版本，直到你释放'),
+            pins.length === 0
+              ? h('div', { className: 'wb-hint' }, '当前没有固定引用的文件')
+              : h('div', { className: 'wb-pins-list' }, pins.map(p => h('div', { key: p.relPath, className: 'wb-pin-row' },
+                  h('span', { className: 'wb-pin-icon' + (p.drifted ? ' drifted' : '') }, Icon.pin(14)),
+                  h('div', { className: 'wb-pin-main' },
+                    h('span', { className: 'wb-pin-path', title: p.relPath }, p.relPath),
+                    h('span', { className: 'wb-pin-meta' }, '固定于 ' + fmtTime(Date.parse(p.createdAt) || 0))),
+                  p.drifted
+                    ? h('span', { className: 'wb-tag warn', title: '文件在固定之后已被修改，下次读取仍返回固定版本' }, '版本已变更')
+                    : h('span', { className: 'wb-tag' }, '未变更'),
+                  h('button', { className: 'wb-mini-btn', onClick: () => releasePins([p.relPath]) }, '释放')))),
+            h('div', { className: 'wb-modal-actions' },
+              pinDriftCount > 0 && h('button', {
+                className: 'wb-mini-btn',
+                onClick: () => releasePins(pins.filter(p => p.drifted).map(p => p.relPath)),
+              }, '全部释放过期引用（' + pinDriftCount + '）'),
+              h('button', { className: 'wb-mini-btn', onClick: () => setShowPins(false) }, '关闭')))),
         showCloud && h('div', { className: 'wb-modal-mask', onClick: () => setShowCloud(false) },
           h('div', { className: 'wb-modal wide', onClick: e => e.stopPropagation() },
             h('div', { className: 'wb-modal-title' }, '云同步'),
@@ -2308,6 +2423,35 @@
       .wb-cloud-status { font-size: 12px; color: var(--wb-fg2); background: var(--wb-bg-sub);
         border-radius: 6px; padding: 6px 10px; word-break: break-all; }
       .wb-dot-on { width: 7px; height: 7px; border-radius: 50%; background: #2ea043; flex-shrink: 0; }
+      /* 云同步状态灯：灰=待首次同步 黄=同步中 绿=成功 红=失败 */
+      .wb-sync-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; cursor: pointer; }
+      .wb-sync-dot.idle { background: #c3c7cf; }
+      .wb-sync-dot.ok { background: #2ea043; }
+      .wb-sync-dot.sync { background: #d29e00; animation: wb-sync-pulse 1.1s ease-in-out infinite; }
+      .wb-sync-dot.err { background: #d83931; }
+      @keyframes wb-sync-pulse { 0%, 100% { opacity: 1 } 50% { opacity: .35 } }
+      /* 固定引用：侧栏提示（过期高亮）+ 弹窗列表 */
+      .wb-pins-hint.clickable { cursor: pointer; border-radius: 6px; }
+      .wb-pins-hint.clickable:hover { background: var(--wb-hover); color: var(--wb-fg2); }
+      .wb-pins-hint.has-drift { color: var(--wb-warn); }
+      .wb-pins-warn { font-size: 11px; color: var(--wb-warn); }
+      .wb-pins-list { display: flex; flex-direction: column; gap: 6px; max-height: 46vh; overflow-y: auto; }
+      .wb-pin-row { display: flex; align-items: center; gap: 10px; padding: 8px 10px;
+        border: 1px solid var(--wb-line); border-radius: 8px; }
+      .wb-pin-icon { display: inline-flex; color: var(--wb-dim); }
+      .wb-pin-icon.drifted { color: var(--wb-warn); }
+      .wb-pin-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+      .wb-pin-path { font-size: 12px; color: var(--wb-fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .wb-pin-meta { font-size: 11px; color: var(--wb-dim); }
+      /* 本地产物弹层顶部的会话汇总条 */
+      .wb-snap { display: flex; align-items: center; gap: 8px; margin: 0 24px 10px; padding: 7px 12px;
+        border: 1px solid var(--wb-line); background: var(--wb-bg-sub); border-radius: 8px;
+        font-size: 12px; color: var(--wb-fg2); flex-shrink: 0; }
+      .wb-snap-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .wb-snap-link { color: var(--wb-accent); cursor: pointer; flex-shrink: 0; }
+      .wb-snap-link:hover { text-decoration: underline; }
+      .wb-snap-close { display: inline-flex; cursor: pointer; color: var(--wb-dim); padding: 2px; border-radius: 4px; }
+      .wb-snap-close:hover { background: var(--wb-hover); color: var(--wb-fg); }
       select.wb-modal-input { appearance: auto; }
       .wb-modal-title { font-size: 15px; font-weight: 600; }
       .wb-modal-input { height: 34px; padding: 0 10px; border: 1px solid var(--wb-line-strong); border-radius: 8px;
@@ -2318,7 +2462,7 @@
 
     /* ── 会话产物气泡：右下角悬浮，几秒后自动消失（形态对齐 memory-watchdog 的 toast）── */
     const NOTICE_POLL_MS = 1500
-    const NOTICE_TTL_MS = 5000
+    const NOTICE_TTL_MS = 8000
     const NOTICE_MAX = 4
     const NOTICE_STYLE_ID = 'dsh-wb-desk-notice-style'
 
@@ -2331,7 +2475,15 @@
         '.wb-notice-card{pointer-events:auto;cursor:pointer;outline:none;box-shadow:0 4px 16px rgba(0,0,0,0.16);' +
         'transition:box-shadow .15s ease,transform .15s ease}' +
         '.wb-notice-card:hover{box-shadow:0 6px 22px rgba(0,0,0,0.22);transform:translateY(-1px)}' +
-        '.wb-notice-card:focus-visible{outline:2px solid #4c8dff;outline-offset:2px}'
+        '.wb-notice-card:focus-visible{outline:2px solid #4c8dff;outline-offset:2px}' +
+        '.wb-notice-body{display:flex;gap:10px;align-items:flex-start;min-width:0}' +
+        '.wb-notice-actions{display:flex;gap:6px;margin-top:7px;padding-left:38px}' +
+        '.wb-notice-act{display:inline-flex;align-items:center;gap:4px;height:22px;padding:0 8px;' +
+        'border:1px solid var(--dsw-alias-border-l2,#e5e7eb);border-radius:6px;background:transparent;' +
+        'color:var(--dsw-alias-label-secondary,#5c6570);font-size:11px;cursor:pointer;' +
+        'transition:background .12s ease,color .12s ease}' +
+        '.wb-notice-act:hover{background:var(--dsw-alias-bg-subtle,#f3f4f6);color:var(--dsw-alias-label-primary,#1f2328)}' +
+        '.wb-notice-err{font-size:11px;line-height:15px;color:#d83931;margin-top:4px;padding-left:38px}'
       document.head.appendChild(style)
     }
 
@@ -2347,6 +2499,35 @@
       const [items, setItems] = useState([])
       const seen = useRef({ boot: null, id: -1 })
       const timers = useRef(new Map())
+      const rootRef = useRef('')
+      const [copiedId, setCopiedId] = useState(null)
+      const [actErrId, setActErrId] = useState(null)
+
+      /* 库根绝对路径：会话产物没有 libPath 时拼出绝对路径供复制 */
+      useEffect(() => {
+        api('/root').then(b => { rootRef.current = b.root || '' }).catch(() => {})
+      }, [])
+
+      const absPathOf = (n) => {
+        if (n.sourcePath) return n.sourcePath
+        const root = rootRef.current
+        if (!root) return n.libPath || ''
+        const sep = root.includes('\\') ? '\\' : '/'
+        return root.replace(/[\\/]+$/, '') + sep + String(n.libPath || '').replaceAll('/', sep)
+      }
+      const copyPath = (n) => {
+        setActErrId(null)
+        const p = absPathOf(n)
+        try { if (navigator.clipboard) navigator.clipboard.writeText(p).catch(() => {}) } catch { /* 无剪贴板权限 */ }
+        setCopiedId(n.id)
+        setTimeout(() => setCopiedId(cur => (cur === n.id ? null : cur)), 1600)
+      }
+      const openFolder = (n) => {
+        setActErrId(null)
+        const abs = !!n.sourcePath
+        post('/open', { path: abs ? n.sourcePath : n.libPath, abs, action: 'folder' })
+          .catch(() => setActErrId(n.id))
+      }
 
       const dismiss = (key) => {
         const timer = timers.current.get(key)
@@ -2416,26 +2597,47 @@
             openItem(item)
           }
         },
+        /* 悬停暂停自动消失，留出点按钮的时间 */
+        onMouseEnter: () => {
+          const t = timers.current.get(item.key)
+          if (t) { clearTimeout(t); timers.current.delete(item.key) }
+        },
+        onMouseLeave: () => {
+          if (!timers.current.has(item.key)) {
+            timers.current.set(item.key, setTimeout(() => dismiss(item.key), NOTICE_TTL_MS))
+          }
+        },
         style: {
-          display: 'flex', gap: 10, alignItems: 'flex-start', padding: '10px 12px',
+          display: 'flex', flexDirection: 'column', padding: '10px 12px',
           background: 'var(--dsw-alias-bg-elevated, #ffffff)',
           border: '1px solid var(--dsw-alias-border-l2, #e5e7eb)',
           borderRadius: 'var(--dsw-radius-md, 8px)',
           animation: 'dsh-wb-notice-in .18s ease-out',
         },
       },
-        fileIcon(item.name, 28),
-        h('div', { style: { minWidth: 0, display: 'flex', flexDirection: 'column', gap: 2 } },
-          h('div', { style: { fontSize: 12, lineHeight: '16px', color: 'var(--dsw-alias-label-tertiary, #8b93a1)' } }, noticeTitle(item)),
-          h('div', {
-            style: {
-              fontSize: 13, lineHeight: '18px', fontWeight: 600,
-              color: 'var(--dsw-alias-label-primary, #1f2328)',
-              overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-            },
-          }, item.name),
-          h('div', { style: { fontSize: 12, lineHeight: '16px', color: 'var(--dsw-alias-label-secondary, #5c6570)', wordBreak: 'break-all' } }, noticeLine(item)),
-        ),
+        h('div', { className: 'wb-notice-body' },
+          fileIcon(item.name, 28),
+          h('div', { style: { minWidth: 0, display: 'flex', flexDirection: 'column', gap: 2 } },
+            h('div', { style: { fontSize: 12, lineHeight: '16px', color: 'var(--dsw-alias-label-tertiary, #8b93a1)' } }, noticeTitle(item)),
+            h('div', {
+              style: {
+                fontSize: 13, lineHeight: '18px', fontWeight: 600,
+                color: 'var(--dsw-alias-label-primary, #1f2328)',
+                overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+              },
+            }, item.name),
+            h('div', { style: { fontSize: 12, lineHeight: '16px', color: 'var(--dsw-alias-label-secondary, #5c6570)', wordBreak: 'break-all' } }, noticeLine(item)),
+          )),
+        h('div', { className: 'wb-notice-actions' },
+          h('button', {
+            className: 'wb-notice-act', title: '复制绝对路径（可直接粘贴到对话里）',
+            onClick: e => { e.stopPropagation(); copyPath(item) },
+          }, Icon.copy(13), copiedId === item.id ? '已复制' : '复制路径'),
+          h('button', {
+            className: 'wb-notice-act', title: '在资源管理器中定位这个文件',
+            onClick: e => { e.stopPropagation(); openFolder(item) },
+          }, Icon.folder(13), '打开文件夹')),
+        actErrId === item.id && h('div', { className: 'wb-notice-err' }, '无法打开所在文件夹，文件可能已被移动或删除'),
       )))
     }
 

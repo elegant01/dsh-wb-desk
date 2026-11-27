@@ -18,7 +18,10 @@ import { listActivePins, releasePin } from './pins.js'
 import { readArtifacts } from './artifacts.js'
 import { resolveSessionMeta } from './sessionmeta.js'
 import { getDerivedArtifacts } from './artifactindex.js'
-import { loadCloudConfig, saveCloudConfig, syncNow, testCloud, scheduleAutoPush, pushFile, presignCosGet, type CloudConfig } from './cloud.js'
+import {
+  loadCloudConfig, saveCloudConfig, syncNow, testCloud, scheduleAutoPush, pushFile, presignCosGet,
+  cloudSyncStatus, markSyncStarted, markSyncResult, markSyncFailed, type CloudConfig,
+} from './cloud.js'
 import { loadConfig, saveConfig } from './config.js'
 import { runMaintenance } from './maintenance.js'
 import { listFileNotices } from './notices.js'
@@ -792,10 +795,29 @@ export function registerRoutes(ctx: WebContext): void {
               return
             }
 
+            // 同步状态灯：configured=是否配置过，status=最近一次同步结果
+            if (route === '/cloud/status' && req.method === 'GET') {
+              const cfg = await loadCloudConfig()
+              sendJson(res, 200, {
+                configured: !!cfg,
+                autoPush: !!cfg?.autoPush,
+                status: cloudSyncStatus(),
+              })
+              return
+            }
+
             if (route === '/cloud/sync' && req.method === 'POST') {
               const cfg = await loadCloudConfig()
               if (!cfg) { sendJson(res, 400, { error: '还没配置云同步' }); return }
-              sendJson(res, 200, await syncNow(cfg))
+              markSyncStarted()
+              try {
+                const r = await syncNow(cfg)
+                markSyncResult(r)
+                sendJson(res, 200, r)
+              } catch (e) {
+                markSyncFailed(e instanceof Error ? e.message : String(e))
+                throw e
+              }
               return
             }
 

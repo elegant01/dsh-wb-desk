@@ -95,12 +95,18 @@
       placement: { rules: [{ ws: 'insight-studio', dir: 'projects/周报' }] },
       pinRetentionDays: 7,
     },
+    /* 云同步演示配置：让侧栏状态灯与「立即同步」在预览里可点（全为假值） */
+    cloud: {
+      protocol: 'cos', endpoint: 'https://cos.ap-guangzhou.myqcloud.com', bucket: 'demo-1313545220',
+      prefix: 'dsh-library', region: 'ap-guangzhou', accessKey: 'demo-secret-id', secretKey: '__keep__',
+      autoPush: true, pathStyle: false,
+    },
     /* 全部为虚构演示数据：不出现真实工作区名、会话标题与路径 */
     artifacts: [
+      { time: '2026-11-19T09:55:00Z', sessionId: 'sess-1002', tool: 'write', libPath: 'inbox/_build_biz.cjs', sourcePath: 'D:\\work\\insight-studio\\_build_biz.cjs', kind: 'relocated', ws: 'insight-studio', title: '核对报表数据' },
+      { time: '2026-11-19T09:52:00Z', sessionId: 'sess-1002', tool: 'edit', libPath: 'projects/周报.md', kind: 'pending', ws: 'insight-studio', title: '核对报表数据' },
       { time: '2026-11-19T09:40:00Z', sessionId: 'sess-1001', tool: 'present', sourcePath: 'D:\\work\\data-lab\\export\\月度报表.xlsx', kind: 'session-file', ws: 'data-lab', title: '整理月度数据', size: 436796 },
       { time: '2026-11-19T09:35:00Z', sessionId: 'sess-1001', tool: 'present', sourcePath: 'D:\\work\\data-lab\\export\\原始数据-摊平.csv', kind: 'session-file', ws: 'data-lab', title: '整理月度数据', size: 562786 },
-      { time: '2026-11-18T11:42:00Z', sessionId: 'sess-1002', tool: 'write', libPath: 'inbox/_build_biz.cjs', sourcePath: 'D:\\work\\insight-studio\\_build_biz.cjs', kind: 'relocated', ws: 'insight-studio', title: '核对报表数据' },
-      { time: '2026-11-18T11:40:00Z', sessionId: 'sess-1002', tool: 'edit', libPath: 'projects/周报.md', kind: 'pending', ws: 'insight-studio', title: '核对报表数据' },
       { time: '2026-11-18T10:33:00Z', sessionId: 'sess-1003', tool: 'write', libPath: 'inbox/项目周报.md', sourcePath: 'D:\\work\\insight-studio\\周报.md', kind: 'relocated', ws: 'insight-studio', title: '修复页面展示问题' },
       { time: '2026-11-17T09:12:00Z', sessionId: 'sess-1004', tool: 'write', sourcePath: 'D:\\work\\web-demo\\dist\\report.html', kind: 'session-file', ws: 'web-demo', title: '生成月度周报页面', size: 20480 },
       { time: '2026-11-17T08:40:00Z', sessionId: 'sess-1004', tool: 'write', sourcePath: 'D:\\work\\web-demo\\scripts\\build_report.js', kind: 'session-file', ws: 'web-demo', title: '生成月度周报页面', size: 5321 },
@@ -271,6 +277,9 @@
       const text = /\.(cjs|js|ts|py|go)$/i.test(p) ? SAMPLE_CODE : SAMPLE_MD
       return mockJson({ path: p, kind: 'text', text })
     }
+    if (path === '/cloud/status') return mockJson(state.cloud
+      ? { configured: true, autoPush: true, status: { state: 'ok', at: Date.now() - 120000, pushed: 2, pulled: 1, errors: 0 } }
+      : { configured: false, autoPush: false, status: { state: 'idle', at: 0, pushed: 0, pulled: 0, errors: 0 } })
     if (path === '/cloud/config' && (!opts || !opts.method)) return mockJson(state.cloud ? { configured: true, config: { ...state.cloud, secretKey: '__keep__' } } : { configured: false })
     if (path === '/cloud/config') { state.cloud = { ...body, secretKey: 'saved' }; return mockJson({ ok: true }) }
     if (path === '/cloud/test') return mockJson({ ok: true, detail: '连接成功，云端前缀下已有 3 个文件（mock）' })
